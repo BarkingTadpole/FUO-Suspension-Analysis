@@ -140,6 +140,10 @@ In the app you can:
 - Assign each uploaded file as `Aero` or `No Aero`
 - Switch between `comparison` and `individual` modes
 - Select which graphs to generate
+- Pick whether comparison mode renders best laps, all laps within the threshold, or both
+- Build custom graphs from detected CSV channels
+- Choose graph type: time series, scatter plot, percent histogram, or track map
+- Pick x/y channels and type custom axis labels/units
 - Change the all-laps threshold percentage
 - View plots directly in the browser
 

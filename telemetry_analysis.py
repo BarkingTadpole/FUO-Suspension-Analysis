@@ -20,13 +20,24 @@ from graph_renderers import GraphRendererFactory
 warnings.filterwarnings('ignore')
 
 class FSAETelemetryAnalyzer:
-    def __init__(self, data_dir, files=None, graph_ids=None, config_labels=None, lap_threshold=1.2):
+    def __init__(
+        self,
+        data_dir,
+        files=None,
+        graph_ids=None,
+        config_labels=None,
+        lap_threshold=1.2,
+        extra_graphs=None,
+        comparison_lap_sets=None,
+    ):
         """Initialize the analyzer with data directory"""
         self.data_dir = Path(data_dir)
         self.files = [Path(file) for file in files] if files else list(self.data_dir.glob('*.csv'))
         self.graph_ids = graph_ids
         self.config_labels = config_labels or {}
         self.lap_threshold = lap_threshold
+        self.extra_graphs = extra_graphs or []
+        self.comparison_lap_sets = comparison_lap_sets or ['best', 'all']
         self.data = {}
         self.best_laps = {}
         self.generated_plots = []
@@ -323,13 +334,14 @@ class FSAETelemetryAnalyzer:
 
     def _selected_graphs(self):
         """Return configured graphs selected for this run."""
-        available_graphs = [graph for graph in DASHBOARD_GRAPHS if graph.get('enabled', True)]
+        all_graphs = DASHBOARD_GRAPHS + self.extra_graphs
+        available_graphs = [graph for graph in all_graphs if graph.get('enabled', True)]
         if not self.graph_ids:
             return available_graphs
 
         graph_ids = set(self.graph_ids)
-        graphs = [graph for graph in DASHBOARD_GRAPHS if graph['id'] in graph_ids]
-        missing = sorted(graph_ids - {graph['id'] for graph in DASHBOARD_GRAPHS})
+        graphs = [graph for graph in all_graphs if graph['id'] in graph_ids]
+        missing = sorted(graph_ids - {graph['id'] for graph in all_graphs})
         if missing:
             raise ValueError(f"Unknown graph id(s): {', '.join(missing)}")
         return graphs
@@ -527,31 +539,33 @@ class FSAETelemetryAnalyzer:
         no_aero_label = f"No Aero ({'+'.join(no_aero_labels)})"
         aero_label = f"Aero ({'+'.join(aero_labels)})"
 
-        print(f"\nComparing best laps: {no_aero_label} vs {aero_label}")
-        best_no_aero_laps = self._best_lap_for_group(no_aero_labels)
-        best_aero_laps = self._best_lap_for_group(aero_labels)
-        self._generate_comparison_plots(
-            best_no_aero_laps,
-            best_aero_laps,
-            no_aero_label,
-            aero_label,
-            plot_context='Best Laps Only',
-            filename_suffix='best_lap',
-        )
+        if 'best' in self.comparison_lap_sets:
+            print(f"\nComparing best laps: {no_aero_label} vs {aero_label}")
+            best_no_aero_laps = self._best_lap_for_group(no_aero_labels)
+            best_aero_laps = self._best_lap_for_group(aero_labels)
+            self._generate_comparison_plots(
+                best_no_aero_laps,
+                best_aero_laps,
+                no_aero_label,
+                aero_label,
+                plot_context='Best Laps Only',
+                filename_suffix='best_lap',
+            )
 
         threshold_percent = self.lap_threshold * 100
         threshold_slug = f"{int(round(threshold_percent))}pct"
-        print(f"\nComparing all laps within {threshold_percent:.0f}% of each file's best lap: {no_aero_label} vs {aero_label}")
-        all_no_aero_laps = self._laps_within_best_threshold_for_group(no_aero_labels, threshold_multiplier=self.lap_threshold)
-        all_aero_laps = self._laps_within_best_threshold_for_group(aero_labels, threshold_multiplier=self.lap_threshold)
-        self._generate_comparison_plots(
-            all_no_aero_laps,
-            all_aero_laps,
-            no_aero_label,
-            aero_label,
-            plot_context=f'All Laps Within {threshold_percent:.0f}% of Best Lap',
-            filename_suffix=f'all_laps_{threshold_slug}',
-        )
+        if 'all' in self.comparison_lap_sets:
+            print(f"\nComparing all laps within {threshold_percent:.0f}% of each file's best lap: {no_aero_label} vs {aero_label}")
+            all_no_aero_laps = self._laps_within_best_threshold_for_group(no_aero_labels, threshold_multiplier=self.lap_threshold)
+            all_aero_laps = self._laps_within_best_threshold_for_group(aero_labels, threshold_multiplier=self.lap_threshold)
+            self._generate_comparison_plots(
+                all_no_aero_laps,
+                all_aero_laps,
+                no_aero_label,
+                aero_label,
+                plot_context=f'All Laps Within {threshold_percent:.0f}% of Best Lap',
+                filename_suffix=f'all_laps_{threshold_slug}',
+            )
     
     def _generate_comparison_plots(self, no_aero_laps, aero_laps, no_aero_label='No Aero', aero_label='Aero', plot_context='Best Laps Only', filename_suffix='best_lap'):
         """Generate one set of overlayed comparison plots."""

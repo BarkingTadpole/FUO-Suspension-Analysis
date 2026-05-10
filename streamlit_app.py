@@ -40,11 +40,14 @@ class TelemetryDashboardApp:
 
         mode = st.sidebar.radio("Mode", ["comparison", "individual"], index=0)
         lap_threshold_percent = st.sidebar.slider("All-laps threshold (% of best lap)", 100, 150, 120, 5)
+        comparison_lap_sets = self._comparison_lap_set_selector(mode)
         graph_ids = self._graph_selector()
         use_samples = st.sidebar.checkbox("Use sample files in this folder", value=True)
 
         uploaded_runs = self._collect_runs(use_samples)
         self._render_run_table(uploaded_runs)
+        detected_channels = self._detect_channels(uploaded_runs)
+        custom_graphs = self._custom_graph_builder(detected_channels)
 
         if st.button("Generate Dashboard", type="primary"):
             if not uploaded_runs:
@@ -53,7 +56,30 @@ class TelemetryDashboardApp:
             if mode == "comparison" and not self._has_comparison_groups(uploaded_runs):
                 st.error("Comparison mode needs at least one No Aero file and one Aero file.")
                 return
-            self._generate_dashboard(uploaded_runs, mode, graph_ids, lap_threshold_percent / 100)
+            selected_graph_ids = graph_ids + [graph["id"] for graph in custom_graphs]
+            self._generate_dashboard(
+                uploaded_runs,
+                mode,
+                selected_graph_ids,
+                lap_threshold_percent / 100,
+                custom_graphs,
+                comparison_lap_sets,
+            )
+
+    def _comparison_lap_set_selector(self, mode):
+        if mode != "comparison":
+            return ["best"]
+        selected = st.sidebar.multiselect(
+            "Comparison lap sets",
+            options=["Best laps only", "All laps within threshold"],
+            default=["Best laps only", "All laps within threshold"],
+        )
+        lap_sets = []
+        if "Best laps only" in selected:
+            lap_sets.append("best")
+        if "All laps within threshold" in selected:
+            lap_sets.append("all")
+        return lap_sets or ["best"]
 
     def _graph_selector(self):
         graph_options = {
@@ -131,11 +157,120 @@ class TelemetryDashboardApp:
             use_container_width=True,
         )
 
+    def _detect_channels(self, runs):
+        """Autodetect available numeric channels from selected CSV files."""
+        if not runs:
+            return []
+        analyzer = FSAETelemetryAnalyzer(self.workspace_root, files=[])
+        channels = []
+        seen = set()
+        for run in runs:
+            try:
+                df = analyzer.load_csv(run.saved_path)
+            except Exception:
+                continue
+            for column in df.columns:
+                if column in seen:
+                    continue
+                if df[column].dtype.kind in "biufc":
+                    channels.append(column)
+                    seen.add(column)
+        return channels
+
+    def _custom_graph_builder(self, detected_channels):
+        """Build custom graph definitions from UI selections."""
+        st.subheader("Custom Graph Builder")
+        if not detected_channels:
+            st.caption("Select or upload CSV files to detect channels.")
+            return []
+
+        custom_graphs = []
+        graph_count = st.number_input("Number of custom graphs", min_value=0, max_value=10, value=0, step=1)
+        graph_type_options = {
+            "Time Series": "timeseries",
+            "Scatter Plot": "scatter",
+            "Percent Histogram": "histogram_percent",
+            "Track Map": "track_map",
+        }
+
+        for idx in range(int(graph_count)):
+            with st.expander(f"Custom Graph {idx + 1}", expanded=True):
+                name = st.text_input("Graph name", value=f"Custom Graph {idx + 1}", key=f"custom_name_{idx}")
+                graph_type_label = st.selectbox("Graph type", list(graph_type_options.keys()), key=f"custom_type_{idx}")
+                graph_kind = graph_type_options[graph_type_label]
+                graph_id = f"custom_{idx + 1}_{self._safe_filename(name).lower()}"
+                graph = {
+                    "id": graph_id,
+                    "name": name,
+                    "category": "Custom Graphs",
+                    "kind": graph_kind,
+                    "enabled": True,
+                }
+
+                if graph_kind == "timeseries":
+                    x_channel = st.selectbox("X channel", detected_channels, index=self._default_channel_index(detected_channels, "Time"), key=f"custom_x_{idx}")
+                    y_channels = st.multiselect("Y channel(s)", detected_channels, key=f"custom_y_multi_{idx}")
+                    x_units = st.text_input("X units/label", value=x_channel, key=f"custom_x_units_{idx}")
+                    y_units = st.text_input("Y units/label", value="Value", key=f"custom_y_units_{idx}")
+                    graph.update({
+                        "x": x_channel,
+                        "x_label": x_units,
+                        "y_label": y_units,
+                        "channels": [{"id": channel, "label": channel} for channel in y_channels],
+                    })
+
+                elif graph_kind == "scatter":
+                    x_channel = st.selectbox("X channel", detected_channels, key=f"custom_scatter_x_{idx}")
+                    y_channel = st.selectbox("Y channel", detected_channels, key=f"custom_scatter_y_{idx}")
+                    x_units = st.text_input("X units/label", value=x_channel, key=f"custom_scatter_x_units_{idx}")
+                    y_units = st.text_input("Y units/label", value=y_channel, key=f"custom_scatter_y_units_{idx}")
+                    graph.update({
+                        "x": x_channel,
+                        "y": y_channel,
+                        "x_label": x_units,
+                        "y_label": y_units,
+                    })
+
+                elif graph_kind == "histogram_percent":
+                    channels = st.multiselect("Histogram channel(s)", detected_channels, key=f"custom_hist_channels_{idx}")
+                    bins = st.number_input("Bins", min_value=4, max_value=80, value=12, step=1, key=f"custom_hist_bins_{idx}")
+                    graph.update({
+                        "channels": [{"id": channel, "label": channel} for channel in channels],
+                        "bins": int(bins),
+                    })
+
+                elif graph_kind == "track_map":
+                    st.caption("Track maps use GPS latitude/longitude channels through the channel resolver.")
+
+                if self._custom_graph_is_valid(graph):
+                    custom_graphs.append(graph)
+                else:
+                    st.caption("Pick the required channels for this graph to enable it.")
+        return custom_graphs
+
+    def _default_channel_index(self, channels, preferred):
+        for idx, channel in enumerate(channels):
+            if preferred.lower() in channel.lower():
+                return idx
+        return 0
+
+    def _custom_graph_is_valid(self, graph):
+        kind = graph["kind"]
+        if kind == "timeseries":
+            return bool(graph.get("x") and graph.get("channels"))
+        if kind == "scatter":
+            return bool(graph.get("x") and graph.get("y"))
+        if kind == "histogram_percent":
+            return bool(graph.get("channels"))
+        if kind == "track_map":
+            return True
+        return False
+
     def _has_comparison_groups(self, runs):
         labels = {run.config_label for run in runs}
         return "No Aero" in labels and "Aero" in labels
 
-    def _generate_dashboard(self, runs, mode, graph_ids, lap_threshold):
+    def _generate_dashboard(self, runs, mode, graph_ids, lap_threshold, custom_graphs, comparison_lap_sets):
         files = [run.saved_path for run in runs]
         config_labels = {run.stem: run.config_label for run in runs}
         analyzer = FSAETelemetryAnalyzer(
@@ -144,6 +279,8 @@ class TelemetryDashboardApp:
             graph_ids=graph_ids,
             config_labels=config_labels,
             lap_threshold=lap_threshold,
+            extra_graphs=custom_graphs,
+            comparison_lap_sets=comparison_lap_sets,
         )
 
         with st.spinner("Generating plots..."):
