@@ -303,7 +303,7 @@ class HistogramPercentGraph(GraphRenderer):
 
 
 class ShockHistogramGraph(GraphRenderer):
-    """Four-corner shock travel and velocity percent histogram."""
+    """Four-corner shock percent histogram for one configured shock metric."""
 
     shock_colors = {"FL": "#e41a1c", "FR": "#00c800", "RL": "#0000ff", "RR": "#ff7f0e"}
 
@@ -330,35 +330,42 @@ class ShockHistogramGraph(GraphRenderer):
     def _draw_corner(self, ax, primary_data, secondary_data, primary_label, secondary_label, shock, comparison):
         corner = shock["corner"]
         color = self.shock_colors.get(corner, "#1f77b4")
-        primary_pos = self.analyzer.channel_series(primary_data, shock["position"])
-        secondary_pos = self.analyzer.channel_series(secondary_data, shock["position"]) if secondary_data is not None else None
-        pos_bins = self.analyzer._combined_bins([primary_pos, secondary_pos], bins=self.graph.get("bins", 10))
-        if primary_pos is not None:
-            self.analyzer._draw_percent_bars(ax, primary_pos, pos_bins, color, f"{primary_label} travel", alpha=0.45 if comparison else 0.65)
-        if secondary_pos is not None:
-            self.analyzer._draw_percent_bars(ax, secondary_pos, pos_bins, color, f"{secondary_label} travel", alpha=0.22, hatch="///", annotate=False)
-        ax.set_title(f"{corner} Shock Travel & Velocity", fontsize=12, fontweight="bold")
-        ax.set_xlabel(f"{corner} Shock Pos [mm]")
+        channel_id = shock["channel"]
+        primary_series = self.analyzer.channel_series(primary_data, channel_id)
+        secondary_series = self.analyzer.channel_series(secondary_data, channel_id) if secondary_data is not None else None
+        bins = self.analyzer._combined_bins([primary_series, secondary_series], bins=self.graph.get("bins", 10))
+        if primary_series is not None:
+            self.analyzer._draw_percent_bars(ax, primary_series, bins, color, primary_label, alpha=0.45 if comparison else 0.65)
+        if secondary_series is not None:
+            self.analyzer._draw_percent_bars(ax, secondary_series, bins, color, secondary_label, alpha=0.22, hatch="///", annotate=False)
+        ax.set_title(f"{corner} {self.graph['name']}", fontsize=12, fontweight="bold")
+        ax.set_xlabel(f"{corner} {self.graph.get('x_label', channel_id)}")
         ax.set_ylabel("Percent [%]")
         ax.grid(True, alpha=0.25)
+        self._annotate_min_max(ax, [(primary_label, primary_series), (secondary_label, secondary_series)])
+        ax.legend(fontsize=7, loc="upper left")
 
-        primary_vel = self.analyzer.channel_series(primary_data, shock["velocity"])
-        secondary_vel = self.analyzer.channel_series(secondary_data, shock["velocity"]) if secondary_data is not None else None
-        vel_bins = self.analyzer._combined_bins([primary_vel, secondary_vel], bins=self.graph.get("bins", 10))
-        vel_ax = ax.twiny()
-        if primary_vel is not None:
-            percentages, edges = self.analyzer._hist_percent(primary_vel, vel_bins)
-            centers = edges[:-1] + np.diff(edges) / 2
-            vel_ax.step(centers, percentages, where="mid", color="black", linewidth=1.6, label=f"{primary_label} velocity")
-        if secondary_vel is not None:
-            percentages, edges = self.analyzer._hist_percent(secondary_vel, vel_bins)
-            centers = edges[:-1] + np.diff(edges) / 2
-            vel_ax.step(centers, percentages, where="mid", color="black", linewidth=1.6, linestyle="--", label=f"{secondary_label} velocity")
-        vel_ax.set_xlabel(f"Velocity on {corner} Shock Pos [mm/s]")
-        vel_ax.tick_params(axis="x", labelsize=8)
-        handles, labels = ax.get_legend_handles_labels()
-        vel_handles, vel_labels = vel_ax.get_legend_handles_labels()
-        ax.legend(handles + vel_handles, labels + vel_labels, fontsize=7, loc="upper left")
+    def _annotate_min_max(self, ax, labelled_series):
+        lines = []
+        for label, series in labelled_series:
+            if series is None:
+                continue
+            clean = series.dropna()
+            if clean.empty:
+                continue
+            lines.append(f"{label}: min {clean.min():.2f}, max {clean.max():.2f}")
+        if not lines:
+            return
+        ax.text(
+            0.98,
+            0.97,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=8,
+            bbox={"facecolor": "white", "edgecolor": "#cccccc", "alpha": 0.85, "pad": 4},
+        )
 
 
 class TrackMapGraph(GraphRenderer):

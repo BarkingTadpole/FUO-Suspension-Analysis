@@ -8,7 +8,7 @@ A comprehensive Python application for analyzing FSAE car telemetry data with su
 - **Aero Configuration Comparison**: Side-by-side comparison of aerodynamic vs non-aerodynamic setups
 - **Individual Analysis**: Detailed analysis of single telemetry files
 - **Multiple Visualizations**:
-  - Shock travel and velocity percent histograms (FL, FR, RL, RR)
+  - Separate shock position, velocity, and acceleration percent histograms (FL, FR, RL, RR) with min/max labels
   - GPS speed, yaw rate, and ECU RPM time series
   - GPS speed, yaw rate, and ECU RPM percent histograms
   - GG diagram (lateral vs longitudinal acceleration)
@@ -122,7 +122,7 @@ Supported configurable graph kinds are:
 - `scatter`: one x/y scatter plot
 - `scatter_grid`: multiple scatter plots in one figure
 - `histogram_percent`: percent histograms for one or more channels
-- `shock_histogram`: four-corner shock travel/velocity percent histogram
+- `shock_histogram`: four-corner shock position, velocity, or acceleration percent histogram
 - `track_map`: GPS lat/lon track map
 
 Graphs can also include a `category` field, such as `"Generic Suspension Data"`, which is used to group sections in the generated dashboards.
@@ -159,7 +159,7 @@ The script generates two PNG plot sets in comparison mode:
 - `dashboard_comparison.html`: browsable comparison dashboard
 - `dashboard_individual.html`: browsable individual-runs dashboard when using `--mode individual`
 
-1. **shock_analysis_*.png**: Percent histogram grids showing shock travel and velocity distributions for all four corners
+1. **shock_*_comparison.png**: Percent histogram grids showing shock position, velocity, or acceleration distributions for all four corners
 2. **speed_yaw_rpm_*.png**: Time-series plots of speed, yaw rate, and RPM
 3. **speed_yaw_rpm_histograms_*.png**: Percent distribution histograms for speed, yaw rate, and RPM
 4. **gg_diagram_*.png**: Lateral vs longitudinal acceleration scatter plot (competitive envelope visualization)
@@ -219,7 +219,7 @@ The tool uses the **Beacon Markers** and **Segment Times** metadata embedded in 
 ### Shock Analysis
 - **Purpose**: Identify suspension behavior differences
 - **Y-axis**: Frequency of occurrence
-- **X-axis**: Shock position (mm) or velocity (mm/s)
+- **X-axis**: Shock position (mm), velocity (mm/s), or acceleration (mm/s^2)
 - **Insight**: Aero setups may show different shock usage patterns due to increased downforce
 
 ### GG Diagram

@@ -173,7 +173,33 @@ class FSAETelemetryAnalyzer:
     def channel_series(self, df, channel_id, required=False):
         """Return a Series for a stable channel id, or None if unavailable."""
         column = self.resolve_channel(df, channel_id, required=required)
-        return df[column] if column else None
+        if column:
+            return df[column]
+        derived = self._derived_channel_series(df, channel_id)
+        if derived is not None:
+            return derived
+        return None
+
+    def _derived_channel_series(self, df, channel_id):
+        """Return computed channels that are not present in the raw export."""
+        shock_acc_sources = {
+            'shock_acc_fl': 'shock_vel_fl',
+            'shock_acc_fr': 'shock_vel_fr',
+            'shock_acc_rl': 'shock_vel_rl',
+            'shock_acc_rr': 'shock_vel_rr',
+        }
+        if channel_id not in shock_acc_sources:
+            return None
+
+        velocity = self.channel_series(df, shock_acc_sources[channel_id])
+        time = self.channel_series(df, 'time')
+        if velocity is None or time is None or len(velocity) < 2:
+            return None
+
+        time_delta = time.astype(float).diff().replace(0, np.nan)
+        acceleration = velocity.astype(float).diff() / time_delta
+        acceleration = acceleration.replace([np.inf, -np.inf], np.nan)
+        return acceleration.fillna(0.0)
 
     def has_channels(self, df, channel_ids):
         """Return True if every channel id can be resolved in df."""
