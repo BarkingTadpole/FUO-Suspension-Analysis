@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 
+import pandas as pd
 import streamlit as st
 
 from dashboard_config import DASHBOARD_GRAPHS, DASHBOARD_TITLE
@@ -42,10 +43,14 @@ class TelemetryDashboardApp:
         lap_threshold_percent = st.sidebar.slider("All-laps threshold (% of best lap)", 100, 150, 120, 5)
         comparison_lap_sets = self._comparison_lap_set_selector(mode)
         graph_ids = self._graph_selector()
+        show_channel_summary = st.sidebar.checkbox("Show channel summary dashboard", value=True)
         use_samples = st.sidebar.checkbox("Use sample files in this folder", value=True)
 
         uploaded_runs = self._collect_runs(use_samples)
         self._render_run_table(uploaded_runs)
+        if show_channel_summary and uploaded_runs:
+            summary_df = self._build_channel_summary(uploaded_runs)
+            self._display_channel_summary(summary_df)
         detected_channels = self._detect_channels(uploaded_runs)
         custom_graphs = self._custom_graph_builder(detected_channels)
 
@@ -176,6 +181,127 @@ class TelemetryDashboardApp:
                     channels.append(column)
                     seen.add(column)
         return channels
+
+    def _build_channel_summary(self, runs):
+        """Build max/min/average stats for every numeric channel in each selected CSV."""
+        analyzer = FSAETelemetryAnalyzer(self.workspace_root, files=[])
+        rows = []
+
+        for run in runs:
+            try:
+                df = analyzer.load_csv(run.saved_path)
+            except Exception as exc:
+                rows.append({
+                    "File": run.original_name,
+                    "Configuration": run.config_label,
+                    "Channel": "CSV load error",
+                    "Min": None,
+                    "Max": None,
+                    "Average": None,
+                    "Samples": 0,
+                    "Note": str(exc),
+                })
+                continue
+
+            for column in df.columns:
+                if df[column].dtype.kind not in "biufc":
+                    continue
+
+                series = df[column].dropna()
+                if series.empty:
+                    continue
+
+                rows.append({
+                    "File": run.original_name,
+                    "Configuration": run.config_label,
+                    "Channel": column,
+                    "Min": float(series.min()),
+                    "Max": float(series.max()),
+                    "Average": float(series.mean()),
+                    "Samples": int(series.count()),
+                    "Note": "",
+                })
+
+        return pd.DataFrame(rows, columns=["File", "Configuration", "Channel", "Min", "Max", "Average", "Samples", "Note"])
+
+    def _display_channel_summary(self, summary_df):
+        st.subheader("Channel Summary Dashboard")
+
+        if summary_df.empty:
+            st.info("No numeric channels found in the selected CSV files.")
+            return
+
+        dashboard_path = self._write_channel_summary_dashboard(summary_df)
+        st.markdown(f"HTML channel summary saved at `{dashboard_path}`")
+
+        display_df = summary_df.copy()
+        for column in ["Min", "Max", "Average"]:
+            display_df[column] = display_df[column].round(4)
+
+        st.dataframe(display_df, use_container_width=True, height=360)
+        st.download_button(
+            "Download channel summary CSV",
+            data=summary_df.to_csv(index=False),
+            file_name="channel_summary.csv",
+            mime="text/csv",
+        )
+
+    def _write_channel_summary_dashboard(self, summary_df):
+        output_path = self.workspace_root / "dashboard_channel_summary.html"
+
+        html_df = summary_df.copy()
+        for column in ["Min", "Max", "Average"]:
+            html_df[column] = html_df[column].round(4)
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{DASHBOARD_TITLE} - Channel Summary</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 24px;
+            color: #1f2933;
+            background: #f7f9fb;
+        }}
+        h1 {{
+            margin-bottom: 4px;
+        }}
+        .subtitle {{
+            margin-top: 0;
+            color: #52606d;
+        }}
+        table {{
+            border-collapse: collapse;
+            width: 100%;
+            background: white;
+            font-size: 13px;
+        }}
+        th, td {{
+            border: 1px solid #d9e2ec;
+            padding: 8px 10px;
+            text-align: left;
+        }}
+        th {{
+            background: #e4e7eb;
+            position: sticky;
+            top: 0;
+        }}
+        tr:nth-child(even) {{
+            background: #f7f9fb;
+        }}
+    </style>
+</head>
+<body>
+    <h1>{DASHBOARD_TITLE} - Channel Summary</h1>
+    <p class="subtitle">Max, min, average, and sample count for every numeric CSV channel in the selected runs.</p>
+    {html_df.to_html(index=False, escape=True)}
+</body>
+</html>
+"""
+        output_path.write_text(html, encoding="utf-8")
+        return output_path
 
     def _custom_graph_builder(self, detected_channels):
         """Build custom graph definitions from UI selections."""
