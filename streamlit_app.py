@@ -56,11 +56,19 @@ class TelemetryDashboardApp:
             self._generate_dashboard(uploaded_runs, mode, graph_ids, lap_threshold_percent / 100)
 
     def _graph_selector(self):
-        graph_options = {f"{graph['name']} ({graph['id']})": graph['id'] for graph in DASHBOARD_GRAPHS}
+        graph_options = {
+            f"{graph.get('category', 'General')} / {graph['name']} ({graph['id']})": graph['id']
+            for graph in DASHBOARD_GRAPHS
+        }
+        default_options = [
+            f"{graph.get('category', 'General')} / {graph['name']} ({graph['id']})"
+            for graph in DASHBOARD_GRAPHS
+            if graph.get("enabled", True)
+        ]
         selected = st.sidebar.multiselect(
             "Graphs",
             options=list(graph_options.keys()),
-            default=list(graph_options.keys()),
+            default=default_options,
         )
         return [graph_options[label] for label in selected]
 

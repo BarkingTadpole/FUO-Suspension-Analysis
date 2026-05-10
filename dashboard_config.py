@@ -1,59 +1,152 @@
-"""Dashboard graph registry.
+"""Dashboard graph and channel registry.
 
 To rename or reorder graphs, edit DASHBOARD_GRAPHS.
-To add a new graph, add a new entry here and implement the matching renderer
-method in telemetry_analysis.py.
+To add a plot, add a graph with a renderer kind such as "timeseries",
+"timeseries_grid", "scatter", "scatter_grid", "histogram_percent",
+"shock_histogram", or "track_map". Use channel ids from CHANNEL_ALIASES instead
+of raw CSV column names so plots survive column-name changes between exports.
 """
 
 DASHBOARD_TITLE = "FSAE Telemetry Dashboard"
+
+CHANNEL_ALIASES = {
+    "time": ["Time", "GPS Time", "Session Time"],
+    "gps_speed": ["GPS Speed", "GPSSpeed", "GPS_Speed", "Speed GPS"],
+    "gps_lat_acc": ["GPS LatAcc", "GPS Lat Acc", "GPS_LatAcc", "LatAcc", "Lateral Acceleration"],
+    "gps_lon_acc": ["GPS LonAcc", "GPS Lon Acc", "GPS_LonAcc", "LonAcc", "Longitudinal Acceleration"],
+    "yaw_rate": ["YawRate", "Yaw Rate", "Yaw_Rate", "GPS Gyro"],
+    "ecu_rpm": ["ECU RPM", "RPM", "Engine RPM"],
+    "wheel_speed_rl": ["ECU WH SP RL", "WH SP RL", "Wheel Speed RL", "RL Wheel Speed"],
+    "wheel_speed_rr": ["ECU WH SP RR", "WH SP RR", "Wheel Speed RR", "RR Wheel Speed"],
+    "distance": ["Distance on GPS Speed", "Distance", "GPS Distance"],
+    "gps_latitude": ["GPS Latitude", "Latitude"],
+    "gps_longitude": ["GPS Longitude", "Longitude"],
+    "shock_pos_fl": ["FL Shock Pos", "Shock Pos FL", "FL Damper Pos", "FL Shock Travel"],
+    "shock_pos_fr": ["FR Shock Pos", "Shock Pos FR", "FR Damper Pos", "FR Shock Travel"],
+    "shock_pos_rl": ["RL Shock Pos", "Shock Pos RL", "RL Damper Pos", "RL Shock Travel"],
+    "shock_pos_rr": ["RR Shock Pos", "Shock Pos RR", "RR Damper Pos", "RR Shock Travel"],
+    "shock_vel_fl": ["Velocity on FL Shock Pos", "FL Shock Velocity", "FL Damper Velocity"],
+    "shock_vel_fr": ["Velocity on FR Shock Pos", "FR Shock Velocity", "FR Damper Velocity"],
+    "shock_vel_rl": ["Velocity on RL Shock Pos", "RL Shock Velocity", "RL Damper Velocity"],
+    "shock_vel_rr": ["Velocity on RR Shock Pos", "RR Shock Velocity", "RR Damper Velocity"],
+    "brake_pressure_front": ["Brake Pressure Front", "Front Brake Pressure", "Brake Pres Front", "Brake Press Front", "BP Front"],
+    "brake_pressure_rear": ["Brake Pressure Rear", "Rear Brake Pressure", "Brake Pres Rear", "Brake Press Rear", "BP Rear"],
+}
 
 DASHBOARD_GRAPHS = [
     {
         "id": "shock",
         "name": "Shock Travel & Velocity",
-        "comparison_method": "_plot_shock_histograms_comparison",
-        "individual_method": "_plot_shock_histograms",
+        "category": "Generic Suspension Data",
+        "kind": "shock_histogram",
+        "corners": [
+            {"corner": "FL", "position": "shock_pos_fl", "velocity": "shock_vel_fl"},
+            {"corner": "FR", "position": "shock_pos_fr", "velocity": "shock_vel_fr"},
+            {"corner": "RL", "position": "shock_pos_rl", "velocity": "shock_vel_rl"},
+            {"corner": "RR", "position": "shock_pos_rr", "velocity": "shock_vel_rr"},
+        ],
+        "bins": 10,
     },
     {
         "id": "speed_yaw_rpm",
         "name": "GPS Speed, Yaw Rate & ECU RPM",
-        "comparison_method": "_plot_speed_yaw_rpm_comparison",
-        "individual_method": "_plot_speed_yaw_rpm",
+        "category": "Generic Suspension Data",
+        "kind": "timeseries_grid",
+        "x": "time",
+        "x_label": "Time (s)",
+        "panels": [
+            {"channel": "gps_speed", "label": "GPS Speed (km/h)", "no_aero_color": "#1f77b4", "aero_color": "#d62728"},
+            {"channel": "yaw_rate", "label": "Yaw Rate (deg/s)", "no_aero_color": "#2ca02c", "aero_color": "#ff7f0e"},
+            {"channel": "ecu_rpm", "label": "ECU RPM", "no_aero_color": "#d62728", "aero_color": "#9467bd"},
+        ],
     },
     {
         "id": "speed_yaw_rpm_histograms",
         "name": "GPS Speed, Yaw Rate & ECU RPM Percent Histograms",
-        "comparison_method": "_plot_speed_yaw_rpm_histograms_comparison",
-        "individual_method": None,
+        "category": "Generic Suspension Data",
+        "kind": "histogram_percent",
+        "channels": [
+            {"id": "gps_speed", "label": "GPS Speed (km/h)"},
+            {"id": "yaw_rate", "label": "Yaw Rate (deg/s)"},
+            {"id": "ecu_rpm", "label": "ECU RPM"},
+        ],
+        "bins": 12,
     },
     {
         "id": "gg",
         "name": "GG Diagram",
-        "comparison_method": "_plot_gg_diagram_comparison",
-        "individual_method": "_plot_gg_diagram",
+        "category": "Generic Suspension Data",
+        "kind": "scatter",
+        "x": "gps_lat_acc",
+        "y": "gps_lon_acc",
+        "x_label": "GPS LatAcc (g)",
+        "y_label": "GPS LonAcc (g)",
+        "equal_aspect": True,
+        "reference_circles": [0.5, 1.0, 1.5, 2.0],
     },
     {
         "id": "speed_yaw",
         "name": "GPS Speed vs Yaw Rate",
-        "comparison_method": "_plot_speed_vs_yaw_comparison",
-        "individual_method": "_plot_speed_vs_yaw",
+        "category": "Generic Suspension Data",
+        "kind": "scatter",
+        "x": "yaw_rate",
+        "y": "gps_speed",
+        "x_label": "Yaw Rate (deg/s)",
+        "y_label": "GPS Speed (km/h)",
     },
     {
         "id": "latacc_yaw",
         "name": "GPS LatAcc vs Yaw Rate",
-        "comparison_method": "_plot_latacc_vs_yaw_comparison",
-        "individual_method": "_plot_latacc_vs_yaw",
+        "category": "Generic Suspension Data",
+        "kind": "scatter",
+        "x": "yaw_rate",
+        "y": "gps_lat_acc",
+        "x_label": "Yaw Rate (deg/s)",
+        "y_label": "GPS LatAcc (g)",
     },
     {
         "id": "speed_wheelspeed",
         "name": "GPS Speed vs Wheel Speed",
-        "comparison_method": "_plot_speed_vs_wheelspeed_comparison",
-        "individual_method": "_plot_speed_vs_wheelspeed",
+        "category": "Generic Suspension Data",
+        "kind": "scatter_grid",
+        "panels": [
+            {
+                "title": "GPS Speed vs RL Wheel Speed",
+                "x": "gps_speed",
+                "y": "wheel_speed_rl",
+                "x_label": "GPS Speed (km/h)",
+                "y_label": "RL Wheel Speed (km/h)",
+                "no_aero_color": "#1f77b4",
+                "aero_color": "#d62728",
+            },
+            {
+                "title": "GPS Speed vs RR Wheel Speed",
+                "x": "gps_speed",
+                "y": "wheel_speed_rr",
+                "x_label": "GPS Speed (km/h)",
+                "y_label": "RR Wheel Speed (km/h)",
+                "no_aero_color": "#2ca02c",
+                "aero_color": "#ff7f0e",
+            },
+        ],
     },
     {
         "id": "track_map",
         "name": "GPS Track Map",
-        "comparison_method": "_plot_track_map_comparison",
-        "individual_method": "_plot_track_map_individual",
+        "category": "Generic Suspension Data",
+        "kind": "track_map",
+    },
+    {
+        "id": "brake_pressure",
+        "name": "Brake Pressure",
+        "category": "Generic Suspension Data",
+        "kind": "timeseries",
+        "channels": [
+            {"id": "brake_pressure_front", "label": "Front Brake Pressure"},
+            {"id": "brake_pressure_rear", "label": "Rear Brake Pressure"},
+        ],
+        "x": "time",
+        "y_label": "Brake Pressure",
+        "enabled": False,
     },
 ]

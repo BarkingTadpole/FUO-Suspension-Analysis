@@ -80,8 +80,52 @@ python3 app.py --mode comparison --graphs track_map gg speed_yaw
 Graph names, order, and available graph IDs live in `dashboard_config.py`.
 
 To rename a graph, edit its `name`.
-To remove a graph from the default dashboard, remove or comment out its entry.
-To add a graph, add a new entry with a unique `id`, `name`, and renderer method names, then implement those methods in `telemetry_analysis.py`.
+To remove a graph from the default dashboard, set `enabled: False` or remove/comment out its entry.
+
+Channels are also configured in `dashboard_config.py` through `CHANNEL_ALIASES`. Use stable channel IDs in graph definitions instead of raw CSV column names. If a future AiM export uses a different column title, add that title to the channel's alias list.
+
+Example brake-pressure setup:
+
+```python
+CHANNEL_ALIASES = {
+    "brake_pressure_front": [
+        "Brake Pressure Front",
+        "Front Brake Pressure",
+        "Brake Pres Front",
+        "BP Front",
+    ],
+}
+```
+
+Then add a graph:
+
+```python
+{
+    "id": "brake_pressure",
+    "name": "Brake Pressure",
+    "kind": "timeseries",
+    "comparison_method": "_plot_configurable_comparison",
+    "individual_method": "_plot_configurable_individual",
+    "channels": [
+        {"id": "brake_pressure_front", "label": "Front Brake Pressure"},
+        {"id": "brake_pressure_rear", "label": "Rear Brake Pressure"},
+    ],
+    "x": "time",
+    "y_label": "Brake Pressure",
+    "enabled": True,
+}
+```
+
+Supported configurable graph kinds are:
+- `timeseries`: one axis with one or more y channels vs time or another x channel
+- `timeseries_grid`: stacked time-series panels
+- `scatter`: one x/y scatter plot
+- `scatter_grid`: multiple scatter plots in one figure
+- `histogram_percent`: percent histograms for one or more channels
+- `shock_histogram`: four-corner shock travel/velocity percent histogram
+- `track_map`: GPS lat/lon track map
+
+Graphs can also include a `category` field, such as `"Generic Suspension Data"`, which is used to group sections in the generated dashboards.
 
 ### Interactive Upload App
 
@@ -101,16 +145,7 @@ In the app you can:
 
 ### CSV File Format
 
-The script accepts AiM telemetry CSV exports with the following expected columns:
-- **Time**: Sample timestamp (seconds)
-- **GPS Speed**: Vehicle speed from GPS (km/h)
-- **GPS LatAcc**: Lateral acceleration (g)
-- **GPS LonAcc**: Longitudinal acceleration (g)
-- **YawRate**: Vehicle yaw rate (deg/s)
-- **ECU RPM**: Engine RPM
-- **ECU WH SP RL**: Right-left wheel speed (km/h)
-- **ECU WH SP RR**: Right-rear wheel speed (km/h)
-- **Shock positions and velocities**: FL/FR/RL/RR shock travel and velocity
+The script accepts AiM telemetry CSV exports. Raw column names do not need to be identical between files as long as each channel can be resolved through `CHANNEL_ALIASES` in `dashboard_config.py`.
 
 ### Output Files
 
