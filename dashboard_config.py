@@ -2,9 +2,10 @@
 
 To rename or reorder graphs, edit DASHBOARD_GRAPHS.
 To add a plot, add a graph with a renderer kind such as "timeseries",
-"timeseries_grid", "scatter", "scatter_grid", "histogram_percent",
-"shock_histogram", or "track_map". Use channel ids from CHANNEL_ALIASES instead
-of raw CSV column names so plots survive column-name changes between exports.
+"timeseries_grid", "scatter", "scatter_grid", "speed_binned_scatter",
+"histogram_percent", "shock_histogram", or "track_map". Use channel ids from
+CHANNEL_ALIASES instead of raw CSV column names so plots survive column-name
+changes between exports.
 """
 
 DASHBOARD_TITLE = "FSAE Telemetry Dashboard"
@@ -14,6 +15,7 @@ CHANNEL_ALIASES = {
     "gps_speed": ["GPS Speed", "GPSSpeed", "GPS_Speed", "Speed GPS"],
     "gps_lat_acc": ["GPS LatAcc", "GPS Lat Acc", "GPS_LatAcc", "LatAcc", "Lateral Acceleration"],
     "gps_lon_acc": ["GPS LonAcc", "GPS Lon Acc", "GPS_LonAcc", "LonAcc", "Longitudinal Acceleration"],
+    "gps_radius": ["GPS Radius", "GPSRadius", "GPS_Radius", "Radius"],
     "yaw_rate": ["YawRate", "Yaw Rate", "Yaw_Rate", "GPS Gyro"],
     "ecu_rpm": ["ECU RPM", "RPM", "Engine RPM"],
     "wheel_speed_rl": ["ECU WH SP RL", "WH SP RL", "Wheel Speed RL", "RL Wheel Speed"],
@@ -168,6 +170,25 @@ DASHBOARD_GRAPHS = [
         "name": "GPS Track Map",
         "category": "Generic Suspension Data",
         "kind": "track_map",
+    },
+    {
+        "id": "gps_radius_latacc_by_speed",
+        "name": "GPS Radius vs LatAcc by Speed",
+        "category": "Vehicle Dynamics",
+        "kind": "speed_binned_scatter",
+        "x": "gps_lat_acc",
+        "y": "gps_radius",
+        "speed_channel": "gps_speed",
+        "x_label": "GPS LatAcc (g)",
+        "y_label": "GPS Radius (m)",
+        "speed_bins": [
+            {"min": 0, "max": 25, "label": "0-25 km/h"},
+            {"min": 25, "max": 45, "label": "25-45 km/h"},
+            {"min": 45, "max": 65, "label": "45-65 km/h"},
+            {"min": 65, "max": 90, "label": "65-90 km/h"},
+        ],
+        "figsize": (14, 10),
+        "size": 16,
     },
     {
         "id": "brake_pressure",

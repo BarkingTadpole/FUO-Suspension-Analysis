@@ -246,6 +246,96 @@ class ScatterGridGraph(GraphRenderer):
         return self._save(fig, self._filename(label))
 
 
+class SpeedBinnedScatterGraph(GraphRenderer):
+    """Scatter plot split into panels by GPS speed ranges."""
+
+    def render_comparison(self, no_aero_laps, aero_laps, no_aero_label, aero_label, plot_context, filename_suffix):
+        no_aero_data = self._combine_laps(no_aero_laps)
+        aero_data = self._combine_laps(aero_laps)
+        speed_bins = self.graph.get("speed_bins", [])
+        fig, axes = self._create_axes(speed_bins)
+        plotted = False
+
+        for ax, speed_bin in zip(axes, speed_bins):
+            for data, label_text, color in [
+                (no_aero_data, no_aero_label, "#1f77b4"),
+                (aero_data, aero_label, "#d62728"),
+            ]:
+                x, y = self._filtered_xy(data, speed_bin)
+                if x is None or y is None or x.empty:
+                    continue
+                ax.scatter(x, y, alpha=0.4, s=self.graph.get("size", 18), label=label_text, color=color)
+                plotted = True
+            self._finish_panel(ax, speed_bin)
+
+        if not plotted:
+            print(f"  Skipped {self.graph['name']}: missing x/y/speed channel or no points in speed ranges")
+            plt.close(fig)
+            return None
+
+        fig.suptitle(f"{self.graph['name']} - {plot_context}", fontsize=14, fontweight="bold")
+        return self._save(fig, self._filename(f"{filename_suffix}_comparison"))
+
+    def render_individual(self, label, data, config_label):
+        speed_bins = self.graph.get("speed_bins", [])
+        fig, axes = self._create_axes(speed_bins)
+        plotted = False
+
+        for ax, speed_bin in zip(axes, speed_bins):
+            x, y = self._filtered_xy(data, speed_bin)
+            if x is None or y is None or x.empty:
+                ax.set_visible(False)
+                continue
+            ax.scatter(x, y, alpha=0.55, s=self.graph.get("size", 18), label=config_label)
+            self._finish_panel(ax, speed_bin)
+            plotted = True
+
+        if not plotted:
+            print(f"  Skipped {self.graph['name']} for {label}: missing x/y/speed channel or no points in speed ranges")
+            plt.close(fig)
+            return None
+
+        fig.suptitle(f"{self.graph['name']} - {label}", fontsize=14, fontweight="bold")
+        return self._save(fig, self._filename(label))
+
+    def _create_axes(self, speed_bins):
+        if not speed_bins:
+            speed_bins = [{"min": 0, "max": 999, "label": "All speeds"}]
+        columns = min(2, len(speed_bins))
+        rows = int(np.ceil(len(speed_bins) / columns))
+        fig, axes = plt.subplots(rows, columns, figsize=tuple(self.graph.get("figsize", (14, 10))))
+        axes = np.atleast_1d(axes).flatten()
+        for ax in axes[len(speed_bins):]:
+            ax.set_visible(False)
+        return fig, axes[:len(speed_bins)]
+
+    def _filtered_xy(self, data, speed_bin):
+        x = self.analyzer.channel_series(data, self.graph["x"])
+        y = self.analyzer.channel_series(data, self.graph["y"])
+        speed = self.analyzer.channel_series(data, self.graph.get("speed_channel", "gps_speed"))
+        if x is None or y is None or speed is None:
+            return None, None
+
+        frame = pd.DataFrame({"x": x, "y": y, "speed": speed}).dropna()
+        min_speed = speed_bin.get("min", -np.inf)
+        max_speed = speed_bin.get("max", np.inf)
+        mask = (frame["speed"] >= min_speed) & (frame["speed"] < max_speed)
+        filtered = frame.loc[mask]
+        return filtered["x"], filtered["y"]
+
+    def _finish_panel(self, ax, speed_bin):
+        ax.set_title(speed_bin.get("label", self._speed_bin_label(speed_bin)), fontsize=12, fontweight="bold")
+        ax.set_xlabel(self.graph.get("x_label", self.graph["x"]))
+        ax.set_ylabel(self.graph.get("y_label", self.graph["y"]))
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+
+    def _speed_bin_label(self, speed_bin):
+        min_speed = speed_bin.get("min", "-inf")
+        max_speed = speed_bin.get("max", "inf")
+        return f"{min_speed}-{max_speed} km/h"
+
+
 class HistogramPercentGraph(GraphRenderer):
     """Percent histogram for one or more channels."""
 
@@ -436,6 +526,7 @@ class GraphRendererFactory:
         "timeseries_grid": TimeSeriesGridGraph,
         "scatter": ScatterGraph,
         "scatter_grid": ScatterGridGraph,
+        "speed_binned_scatter": SpeedBinnedScatterGraph,
         "histogram_percent": HistogramPercentGraph,
         "shock_histogram": ShockHistogramGraph,
         "track_map": TrackMapGraph,
