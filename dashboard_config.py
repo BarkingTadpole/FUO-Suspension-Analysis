@@ -71,7 +71,7 @@ DASHBOARD_GRAPHS = [
         "name": "Shock Acceleration Histograms",
         "category": "Generic Suspension Data",
         "kind": "shock_histogram",
-        "x_label": "Shock Acceleration [mm/s^2]",
+        "x_label": "Shock Acceleration [g]",
         "corners": [
             {"corner": "FL", "channel": "shock_acc_fl"},
             {"corner": "FR", "channel": "shock_acc_fr"},

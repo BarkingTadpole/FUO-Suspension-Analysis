@@ -19,6 +19,8 @@ from graph_renderers import GraphRendererFactory
 
 warnings.filterwarnings('ignore')
 
+MM_PER_S2_PER_G = 9806.65
+
 class FSAETelemetryAnalyzer:
     def __init__(
         self,
@@ -174,11 +176,23 @@ class FSAETelemetryAnalyzer:
         """Return a Series for a stable channel id, or None if unavailable."""
         column = self.resolve_channel(df, channel_id, required=required)
         if column:
-            return df[column]
+            series = df[column]
+            if self._is_shock_acceleration_channel(channel_id, column):
+                return series / MM_PER_S2_PER_G
+            return series
         derived = self._derived_channel_series(df, channel_id)
         if derived is not None:
             return derived
         return None
+
+    def _is_shock_acceleration_channel(self, channel_id, column):
+        """Identify shock acceleration channels that should be displayed in g."""
+        shock_acc_channels = {'shock_acc_fl', 'shock_acc_fr', 'shock_acc_rl', 'shock_acc_rr'}
+        if channel_id in shock_acc_channels:
+            return True
+
+        normalized_column = self._normalize_channel_name(column)
+        return normalized_column.startswith('accelerationon') and 'shockpos' in normalized_column
 
     def _derived_channel_series(self, df, channel_id):
         """Return computed channels that are not present in the raw export."""
@@ -199,7 +213,7 @@ class FSAETelemetryAnalyzer:
         time_delta = time.astype(float).diff().replace(0, np.nan)
         acceleration = velocity.astype(float).diff() / time_delta
         acceleration = acceleration.replace([np.inf, -np.inf], np.nan)
-        return acceleration.fillna(0.0)
+        return acceleration.fillna(0.0) / MM_PER_S2_PER_G
 
     def has_channels(self, df, channel_ids):
         """Return True if every channel id can be resolved in df."""
