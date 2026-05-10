@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 
 import pandas as pd
@@ -37,6 +38,7 @@ class TelemetryDashboardApp:
     def run(self):
         st.set_page_config(page_title=DASHBOARD_TITLE, layout="wide")
         st.title(DASHBOARD_TITLE)
+        st.caption(self._version_label())
         st.caption("Upload AiM CSV files, choose a mode, select graphs, and generate an interactive dashboard.")
 
         mode = st.sidebar.radio("Mode", ["comparison", "individual"], index=0)
@@ -70,6 +72,39 @@ class TelemetryDashboardApp:
                 custom_graphs,
                 comparison_lap_sets,
             )
+
+    def _version_label(self):
+        """Return a visible git version label for deployed Streamlit builds."""
+        try:
+            commit_subject = subprocess.check_output(
+                ["git", "-C", str(self.sample_dir), "log", "-1", "--pretty=%s"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            commit_hash = subprocess.check_output(
+                ["git", "-C", str(self.sample_dir), "rev-parse", "--short", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            dirty_status = subprocess.check_output(
+                ["git", "-C", str(self.sample_dir), "status", "--porcelain"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            dirty_marker = " + local changes" if dirty_status else ""
+            if commit_subject and commit_hash:
+                return f"Version: {commit_hash} - {commit_subject}{dirty_marker}"
+        except Exception:
+            pass
+
+        commit_message_path = self.sample_dir / ".git" / "COMMIT_EDITMSG"
+        if commit_message_path.exists():
+            commit_message = commit_message_path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
+            commit_message = [line for line in commit_message if line and not line.startswith("#")]
+            if commit_message:
+                return f"Version: {commit_message[0]}"
+
+        return "Version: local development build"
 
     def _comparison_lap_set_selector(self, mode):
         if mode != "comparison":
