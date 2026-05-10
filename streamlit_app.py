@@ -2,16 +2,23 @@
 """Interactive Streamlit dashboard for FSAE telemetry analysis."""
 
 from dataclasses import dataclass
+from datetime import datetime
+import hashlib
+import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
+import uuid
+import csv
+import io
 
 import pandas as pd
 import streamlit as st
 
 from dashboard_config import DASHBOARD_GRAPHS, DASHBOARD_TITLE
+from math_channels import MathChannelEngine
 from telemetry_analysis import FSAETelemetryAnalyzer
 
 
@@ -22,10 +29,22 @@ class UploadedRun:
     original_name: str
     saved_path: Path
     config_label: str
+    event_type: str = ""
+    custom_event: str = ""
+    driver: str = ""
+    field: str = ""
+    suspension_setup: str = ""
+    sprocket_size: str = ""
+    notes: str = ""
+    file_id: str = ""
 
     @property
     def stem(self):
         return self.saved_path.stem
+
+    @property
+    def event_label(self):
+        return self.custom_event if self.event_type == "Custom" and self.custom_event else self.event_type
 
 
 class TelemetryDashboardApp:
@@ -34,6 +53,9 @@ class TelemetryDashboardApp:
     def __init__(self):
         self.workspace_root = Path(tempfile.gettempdir()) / "fsae_telemetry_dashboard"
         self.sample_dir = Path(__file__).parent
+        self.library_root = self.sample_dir / ".telemetry_uploads"
+        self.library_files_root = self.library_root / "files"
+        self.library_manifest_path = self.library_root / "manifest.json"
 
     def run(self):
         st.set_page_config(page_title=DASHBOARD_TITLE, layout="wide")
@@ -54,7 +76,11 @@ class TelemetryDashboardApp:
             summary_df = self._build_channel_summary(uploaded_runs)
             self._display_channel_summary(summary_df)
         detected_channels = self._detect_channels(uploaded_runs)
-        custom_graphs = self._custom_graph_builder(detected_channels)
+        channel_units = self._detect_channel_units(uploaded_runs)
+        math_channels = self._custom_math_channel_builder(detected_channels, channel_units)
+        detected_channels = self._channels_with_math(detected_channels, math_channels)
+        channel_units.update({channel["name"]: channel.get("unit", "") for channel in math_channels})
+        custom_graphs = self._custom_graph_builder(detected_channels, channel_units)
         graph_filters = self._graph_filter_builder(graph_ids, custom_graphs, detected_channels)
 
         if st.button("Generate Dashboard", type="primary"):
@@ -73,6 +99,7 @@ class TelemetryDashboardApp:
                 custom_graphs,
                 comparison_lap_sets,
                 graph_filters,
+                math_channels,
             )
 
     def _version_label(self):
@@ -145,21 +172,291 @@ class TelemetryDashboardApp:
         workspace = self._prepare_workspace()
         runs = []
 
+        manifest = self._load_file_manifest()
+        if uploads:
+            saved_count = self._save_uploaded_files(uploads, manifest)
+            if saved_count:
+                self._save_file_manifest(manifest)
+                st.success(f"Saved {saved_count} uploaded file(s) to the persistent data library.")
+
         if use_samples:
             for filename, config_label in [("265.csv", "No Aero"), ("266.csv", "Aero"), ("273.csv", "Aero")]:
                 sample_path = self.sample_dir / filename
                 if sample_path.exists():
                     target_path = workspace / filename
                     shutil.copy2(sample_path, target_path)
-                    runs.append(UploadedRun(filename, target_path, config_label))
+                    metadata = self._metadata_from_aim_csv_path(sample_path)
+                    runs.append(UploadedRun(
+                        filename,
+                        target_path,
+                        metadata.get("aero_config") or config_label,
+                        event_type=metadata.get("event_type", "Amigo Track 2"),
+                        custom_event=metadata.get("custom_event", ""),
+                        driver=metadata.get("driver", "Sample"),
+                        field=metadata.get("field", ""),
+                        suspension_setup=metadata.get("suspension_setup", ""),
+                        sprocket_size=metadata.get("sprocket_size", ""),
+                        notes=metadata.get("notes", ""),
+                        file_id=f"sample_{filename}",
+                    ))
 
-        for upload in uploads:
-            config_label = self._config_picker_for_upload(upload.name)
-            target_path = workspace / self._safe_filename(upload.name)
-            target_path.write_bytes(upload.getbuffer())
-            runs.append(UploadedRun(upload.name, target_path, config_label))
+        runs.extend(self._persistent_file_library(manifest))
 
         return runs
+
+    def _load_file_manifest(self):
+        if not self.library_manifest_path.exists():
+            return {"files": []}
+        try:
+            return json.loads(self.library_manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            st.warning("Upload library manifest is invalid. Starting with an empty library.")
+            return {"files": []}
+
+    def _save_file_manifest(self, manifest):
+        self.library_root.mkdir(parents=True, exist_ok=True)
+        self.library_manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    def _save_uploaded_files(self, uploads, manifest):
+        self.library_files_root.mkdir(parents=True, exist_ok=True)
+        saved_count = 0
+        existing_hashes = {entry.get("content_hash") for entry in manifest.get("files", []) if entry.get("content_hash")}
+        for upload in uploads:
+            upload_bytes = bytes(upload.getbuffer())
+            content_hash = hashlib.sha256(upload_bytes).hexdigest()
+            if content_hash in existing_hashes:
+                continue
+
+            header_metadata = self._metadata_from_aim_csv_bytes(upload_bytes, upload.name)
+            file_id = uuid.uuid4().hex[:12]
+            safe_name = self._safe_filename(upload.name)
+            stored_name = f"{file_id}_{safe_name}"
+            stored_path = self.library_files_root / stored_name
+            stored_path.write_bytes(upload_bytes)
+            manifest.setdefault("files", []).append({
+                "id": file_id,
+                "original_name": upload.name,
+                "stored_name": stored_name,
+                "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+                "content_hash": content_hash,
+                "size_bytes": len(upload_bytes),
+                **header_metadata,
+            })
+            existing_hashes.add(content_hash)
+            saved_count += 1
+        return saved_count
+
+    def _default_file_metadata(self, filename):
+        return {
+            "event_type": "Autocross",
+            "custom_event": "",
+            "driver": "",
+            "field": "",
+            "suspension_setup": "",
+            "aero_config": "Aero" if "aero" in filename.lower() and "no" not in filename.lower() else "No Aero",
+            "sprocket_size": "",
+            "notes": "",
+        }
+
+    def _metadata_from_aim_csv_path(self, path):
+        return self._metadata_from_aim_csv_bytes(path.read_bytes(), path.name)
+
+    def _metadata_from_aim_csv_bytes(self, data, filename):
+        metadata = self._default_file_metadata(filename)
+        aim_header = self._read_aim_header_metadata(data)
+
+        session = aim_header.get("Session", "")
+        event_type, custom_event = self._event_from_session(session)
+        metadata.update({
+            "event_type": event_type,
+            "custom_event": custom_event,
+            "driver": aim_header.get("Racer", ""),
+            "field": aim_header.get("Championship", ""),
+            "notes": self._notes_from_aim_header(aim_header),
+        })
+
+        comment = aim_header.get("Comment", "")
+        inferred_aero = self._aero_from_text(f"{filename} {session} {comment}")
+        if inferred_aero:
+            metadata["aero_config"] = inferred_aero
+
+        suspension_setup = self._regex_first(comment, [
+            r"suspension(?:\s+setup)?\s*[:=-]\s*([^,;\n\r]+)",
+            r"setup\s*[:=-]\s*([^,;\n\r]+)",
+        ])
+        sprocket_size = self._regex_first(comment, [
+            r"sprocket(?:\s+size)?\s*[:=-]\s*([0-9]{1,2}\s*/\s*[0-9]{1,2}|[0-9]{1,2}[-xX][0-9]{1,2}|[^,;\n\r]+)",
+            r"gear(?:ing)?\s*[:=-]\s*([0-9]{1,2}\s*/\s*[0-9]{1,2}|[0-9]{1,2}[-xX][0-9]{1,2})",
+        ])
+        if suspension_setup:
+            metadata["suspension_setup"] = suspension_setup
+        if sprocket_size:
+            metadata["sprocket_size"] = sprocket_size
+
+        return metadata
+
+    def _read_aim_header_metadata(self, data):
+        text = data.decode("utf-8-sig", errors="ignore")
+        rows = list(csv.reader(io.StringIO(text)))
+        metadata = {}
+        for row in rows[:25]:
+            if len(row) > 10 and row[0].strip('"').strip() == "Time":
+                break
+            if len(row) >= 2:
+                key = row[0].strip('"').strip()
+                value = row[1].strip('"').strip()
+                if key:
+                    metadata[key] = value
+        return metadata
+
+    def _event_from_session(self, session):
+        normalized = self._normalize_text(session)
+        event_map = [
+            ("Autocross", ["autocross", "auto x", "autox", "auto-x"]),
+            ("Accel", ["accel", "acceleration"]),
+            ("Skidpad", ["skidpad", "skid pad"]),
+            ("Amigo Track 1", ["amigo 1", "amigo track 1", "amigo one"]),
+            ("Amigo Track 2", ["amigo 2", "amigo track 2", "amigo two"]),
+        ]
+        for event_type, patterns in event_map:
+            if any(pattern in normalized for pattern in patterns):
+                return event_type, ""
+        if session:
+            return "Custom", session
+        return "Autocross", ""
+
+    def _aero_from_text(self, value):
+        normalized = self._normalize_text(value)
+        if any(token in normalized for token in ["no aero", "no-aero", "without aero", "non aero", "nonaero"]):
+            return "No Aero"
+        if "aero" in normalized:
+            return "Aero"
+        return None
+
+    def _notes_from_aim_header(self, aim_header):
+        parts = []
+        for key in ["Comment", "Vehicle", "Date", "Time", "Sample Rate", "Duration"]:
+            value = aim_header.get(key)
+            if value:
+                parts.append(f"{key}: {value}")
+        return "\n".join(parts)
+
+    def _regex_first(self, value, patterns):
+        for pattern in patterns:
+            match = re.search(pattern, value or "", flags=re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return ""
+
+    def _normalize_text(self, value):
+        return re.sub(r"\s+", " ", str(value).lower()).strip()
+
+    def _persistent_file_library(self, manifest):
+        st.subheader("Persistent Data File Library")
+        files = manifest.get("files", [])
+        if not files:
+            st.caption("Uploaded files will stay here until you delete them.")
+            return []
+
+        label_to_entry = {
+            self._library_entry_label(entry): entry
+            for entry in files
+            if self._library_file_path(entry).exists()
+        }
+        selected_labels = st.multiselect(
+            "Stored files to include",
+            options=list(label_to_entry.keys()),
+            default=list(label_to_entry.keys()),
+        )
+
+        runs = []
+        for entry in list(files):
+            file_path = self._library_file_path(entry)
+            if not file_path.exists():
+                continue
+
+            with st.expander(f"File Info - {entry.get('original_name', file_path.name)}", expanded=False):
+                self._library_entry_editor(entry, manifest)
+
+            if self._library_entry_label(entry) in selected_labels:
+                runs.append(self._run_from_library_entry(entry))
+
+        return runs
+
+    def _library_entry_label(self, entry):
+        event_type = entry.get("custom_event") if entry.get("event_type") == "Custom" and entry.get("custom_event") else entry.get("event_type", "")
+        driver = entry.get("driver", "")
+        aero = entry.get("aero_config", "")
+        parts = [entry.get("original_name", "uploaded.csv")]
+        details = ", ".join(part for part in [event_type, driver, aero] if part)
+        if details:
+            parts.append(f"({details})")
+        parts.append(f"[{entry.get('id', 'unknown')}]")
+        return " ".join(parts)
+
+    def _library_file_path(self, entry):
+        return self.library_files_root / entry.get("stored_name", "")
+
+    def _library_entry_editor(self, entry, manifest):
+        event_options = ["Autocross", "Accel", "Skidpad", "Amigo Track 1", "Amigo Track 2", "Custom"]
+        file_id = entry["id"]
+        current_event = entry.get("event_type", "Autocross")
+        event_index = event_options.index(current_event) if current_event in event_options else 0
+
+        columns = st.columns(3)
+        entry["event_type"] = columns[0].selectbox("Event", event_options, index=event_index, key=f"event_{file_id}")
+        entry["aero_config"] = columns[1].selectbox(
+            "Aero",
+            ["No Aero", "Aero"],
+            index=1 if entry.get("aero_config") == "Aero" else 0,
+            key=f"aero_{file_id}",
+        )
+        entry["driver"] = columns[2].text_input("Driver", value=entry.get("driver", ""), key=f"driver_{file_id}")
+
+        if entry["event_type"] == "Custom":
+            entry["custom_event"] = st.text_input("Custom event name", value=entry.get("custom_event", ""), key=f"custom_event_{file_id}")
+        else:
+            entry["custom_event"] = ""
+
+        columns = st.columns(3)
+        entry["field"] = columns[0].text_input("Field", value=entry.get("field", ""), key=f"field_{file_id}")
+        entry["suspension_setup"] = columns[1].text_input("Suspension setup", value=entry.get("suspension_setup", ""), key=f"suspension_{file_id}")
+        entry["sprocket_size"] = columns[2].text_input("Sprocket size", value=entry.get("sprocket_size", ""), key=f"sprocket_{file_id}")
+        entry["notes"] = st.text_area("Notes", value=entry.get("notes", ""), key=f"notes_{file_id}", height=80)
+
+        columns = st.columns([1, 1, 1, 3])
+        if columns[0].button("Save Info", key=f"save_info_{file_id}"):
+            self._save_file_manifest(manifest)
+            st.success("Saved file info.")
+        if columns[1].button("Auto Fill from CSV Header", key=f"autofill_{file_id}"):
+            entry.update(self._metadata_from_aim_csv_path(self._library_file_path(entry)))
+            self._save_file_manifest(manifest)
+            st.rerun()
+        if columns[2].button("Delete File", key=f"delete_file_{file_id}"):
+            self._delete_library_entry(entry, manifest)
+            st.rerun()
+
+    def _delete_library_entry(self, entry, manifest):
+        file_path = self._library_file_path(entry)
+        if file_path.exists():
+            file_path.unlink()
+        manifest["files"] = [item for item in manifest.get("files", []) if item.get("id") != entry.get("id")]
+        self._save_file_manifest(manifest)
+
+    def _run_from_library_entry(self, entry):
+        return UploadedRun(
+            original_name=entry.get("original_name", entry.get("stored_name", "uploaded.csv")),
+            saved_path=self._library_file_path(entry),
+            config_label=entry.get("aero_config", "No Aero"),
+            event_type=entry.get("event_type", ""),
+            custom_event=entry.get("custom_event", ""),
+            driver=entry.get("driver", ""),
+            field=entry.get("field", ""),
+            suspension_setup=entry.get("suspension_setup", ""),
+            sprocket_size=entry.get("sprocket_size", ""),
+            notes=entry.get("notes", ""),
+            file_id=entry.get("id", ""),
+        )
 
     def _prepare_workspace(self):
         workspace = self.workspace_root
@@ -168,15 +465,6 @@ class TelemetryDashboardApp:
             if path.is_file():
                 path.unlink()
         return workspace
-
-    def _config_picker_for_upload(self, filename):
-        default_index = 1 if "aero" in filename.lower() and "no" not in filename.lower() else 0
-        return st.selectbox(
-            f"Configuration for {filename}",
-            ["No Aero", "Aero"],
-            index=default_index,
-            key=f"config_{filename}",
-        )
 
     def _safe_filename(self, filename):
         clean_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename).strip("_")
@@ -192,7 +480,12 @@ class TelemetryDashboardApp:
                 {
                     "File": run.original_name,
                     "Saved As": run.saved_path.name,
+                    "Event": run.event_label,
+                    "Driver": run.driver,
+                    "Field": run.field,
+                    "Suspension Setup": run.suspension_setup,
                     "Configuration": run.config_label,
+                    "Sprocket Size": run.sprocket_size,
                 }
                 for run in runs
             ],
@@ -217,6 +510,38 @@ class TelemetryDashboardApp:
                 if df[column].dtype.kind in "biufc":
                     channels.append(column)
                     seen.add(column)
+        return channels
+
+    def _detect_channel_units(self, runs):
+        """Return the first detected unit label for each CSV channel."""
+        units = {}
+        for run in runs:
+            for channel, unit in self._read_channel_units(run.saved_path).items():
+                units.setdefault(channel, unit)
+        return units
+
+    def _read_channel_units(self, filepath):
+        import csv
+
+        with open(filepath, "r") as f:
+            rows = list(csv.reader(f))
+
+        for idx, row in enumerate(rows):
+            headers = [column.strip('"').strip() for column in row]
+            if len(headers) > 10 and headers[0] == "Time" and idx + 1 < len(rows):
+                unit_row = [unit.strip('"').strip() for unit in rows[idx + 1]]
+                return {
+                    header: unit
+                    for header, unit in zip(headers, unit_row)
+                    if header
+                }
+        return {}
+
+    def _channels_with_math(self, detected_channels, math_channels):
+        channels = list(detected_channels)
+        for channel in math_channels:
+            if channel["name"] not in channels:
+                channels.append(channel["name"])
         return channels
 
     def _build_channel_summary(self, runs):
@@ -251,6 +576,11 @@ class TelemetryDashboardApp:
                 rows.append({
                     "File": run.original_name,
                     "Configuration": run.config_label,
+                    "Event": run.event_label,
+                    "Driver": run.driver,
+                    "Field": run.field,
+                    "Suspension Setup": run.suspension_setup,
+                    "Sprocket Size": run.sprocket_size,
                     "Channel": column,
                     "Min": float(series.min()),
                     "Max": float(series.max()),
@@ -259,7 +589,21 @@ class TelemetryDashboardApp:
                     "Note": "",
                 })
 
-        return pd.DataFrame(rows, columns=["File", "Configuration", "Channel", "Min", "Max", "Average", "Samples", "Note"])
+        return pd.DataFrame(rows, columns=[
+            "File",
+            "Configuration",
+            "Event",
+            "Driver",
+            "Field",
+            "Suspension Setup",
+            "Sprocket Size",
+            "Channel",
+            "Min",
+            "Max",
+            "Average",
+            "Samples",
+            "Note",
+        ])
 
     def _display_channel_summary(self, summary_df):
         st.subheader("Channel Summary Dashboard")
@@ -340,7 +684,80 @@ class TelemetryDashboardApp:
         output_path.write_text(html, encoding="utf-8")
         return output_path
 
-    def _custom_graph_builder(self, detected_channels):
+    def _custom_math_channel_builder(self, detected_channels, channel_units):
+        """Build custom math channel definitions with calculator-style controls."""
+        st.subheader("Custom Math Channels")
+        if not detected_channels:
+            st.caption("Select or upload CSV files to create math channels.")
+            return []
+
+        math_channels = []
+        local_units = dict(channel_units)
+        channel_count = st.number_input("Number of custom math channels", min_value=0, max_value=12, value=0, step=1)
+        for idx in range(int(channel_count)):
+            with st.expander(f"Math Channel {idx + 1}", expanded=True):
+                available_channels = self._channels_with_math(detected_channels, math_channels)
+                default_name = f"Math Channel {idx + 1}"
+                name = st.text_input("Channel name", value=default_name, key=f"math_name_{idx}").strip()
+                expression_key = f"math_expression_{idx}"
+                if expression_key not in st.session_state:
+                    st.session_state[expression_key] = ""
+
+                insert_channel = st.selectbox("Insert channel", available_channels, key=f"math_insert_channel_{idx}")
+                if st.button("Insert selected channel", key=f"math_insert_button_{idx}"):
+                    self._append_math_token(expression_key, f"{{{insert_channel}}}")
+
+                self._calculator_buttons(expression_key, idx)
+                expression = st.text_area(
+                    "Expression",
+                    key=expression_key,
+                    help="Use channels in braces, for example: {GPS Speed} * sin({GPS LatAcc})",
+                ).strip()
+
+                if not name or not expression:
+                    st.caption("Enter a name and expression to enable this math channel.")
+                    continue
+                if name in available_channels:
+                    st.warning(f"'{name}' already exists. Pick a unique math channel name.")
+                    continue
+
+                try:
+                    unit = MathChannelEngine.infer_unit(expression, local_units)
+                    missing_channels = [channel for channel in MathChannelEngine.channel_names(expression) if channel not in available_channels]
+                    if missing_channels:
+                        st.warning(f"Unknown input channel(s): {', '.join(missing_channels)}")
+                        continue
+                    st.caption(f"Auto unit: `{unit or 'unitless'}`")
+                    math_channels.append({
+                        "name": name,
+                        "expression": expression,
+                        "unit": unit,
+                    })
+                    local_units[name] = unit
+                except Exception as exc:
+                    st.warning(f"Math channel '{name}' is not valid yet: {exc}")
+
+        return math_channels
+
+    def _calculator_buttons(self, expression_key, idx):
+        button_rows = [
+            ["+", "-", "*", "/", "**", "(", ")"],
+            ["sin(", "cos(", "tan(", "asin(", "acos(", "atan("],
+            ["sqrt(", "abs(", "log(", "log10(", "exp(", "radians(", "degrees("],
+            ["pi", "e", ".", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+        ]
+        for row_idx, row in enumerate(button_rows):
+            columns = st.columns(len(row))
+            for col, token in zip(columns, row):
+                if col.button(token, key=f"math_token_{idx}_{row_idx}_{token}"):
+                    self._append_math_token(expression_key, token)
+
+    def _append_math_token(self, expression_key, token):
+        expression = st.session_state.get(expression_key, "")
+        separator = "" if not expression or expression.endswith((" ", "(", "{", "+", "-", "*", "/", ".")) else " "
+        st.session_state[expression_key] = f"{expression}{separator}{token}"
+
+    def _custom_graph_builder(self, detected_channels, channel_units):
         """Build custom graph definitions from UI selections."""
         st.subheader("Custom Graph Builder")
         if not detected_channels:
@@ -373,7 +790,7 @@ class TelemetryDashboardApp:
                 if graph_kind == "timeseries":
                     x_channel = st.selectbox("X channel", detected_channels, index=self._default_channel_index(detected_channels, "Time"), key=f"custom_x_{idx}")
                     y_channels = st.multiselect("Y channel(s)", detected_channels, key=f"custom_y_multi_{idx}")
-                    x_units = st.text_input("X units/label", value=x_channel, key=f"custom_x_units_{idx}")
+                    x_units = st.text_input("X units/label", value=self._channel_label(x_channel, channel_units), key=f"custom_x_units_{idx}")
                     y_units = st.text_input("Y units/label", value="Value", key=f"custom_y_units_{idx}")
                     graph.update({
                         "x": x_channel,
@@ -385,8 +802,8 @@ class TelemetryDashboardApp:
                 elif graph_kind == "scatter":
                     x_channel = st.selectbox("X channel", detected_channels, key=f"custom_scatter_x_{idx}")
                     y_channel = st.selectbox("Y channel", detected_channels, key=f"custom_scatter_y_{idx}")
-                    x_units = st.text_input("X units/label", value=x_channel, key=f"custom_scatter_x_units_{idx}")
-                    y_units = st.text_input("Y units/label", value=y_channel, key=f"custom_scatter_y_units_{idx}")
+                    x_units = st.text_input("X units/label", value=self._channel_label(x_channel, channel_units), key=f"custom_scatter_x_units_{idx}")
+                    y_units = st.text_input("Y units/label", value=self._channel_label(y_channel, channel_units), key=f"custom_scatter_y_units_{idx}")
                     graph.update({
                         "x": x_channel,
                         "y": y_channel,
@@ -416,6 +833,10 @@ class TelemetryDashboardApp:
             if preferred.lower() in channel.lower():
                 return idx
         return 0
+
+    def _channel_label(self, channel, channel_units):
+        unit = channel_units.get(channel, "")
+        return f"{channel} [{unit}]" if unit else channel
 
     def _custom_graph_is_valid(self, graph):
         kind = graph["kind"]
@@ -519,7 +940,7 @@ class TelemetryDashboardApp:
         labels = {run.config_label for run in runs}
         return "No Aero" in labels and "Aero" in labels
 
-    def _generate_dashboard(self, runs, mode, graph_ids, lap_threshold, custom_graphs, comparison_lap_sets, graph_filters):
+    def _generate_dashboard(self, runs, mode, graph_ids, lap_threshold, custom_graphs, comparison_lap_sets, graph_filters, math_channels):
         files = [run.saved_path for run in runs]
         config_labels = {run.stem: run.config_label for run in runs}
         analyzer = FSAETelemetryAnalyzer(
@@ -531,6 +952,7 @@ class TelemetryDashboardApp:
             extra_graphs=custom_graphs,
             comparison_lap_sets=comparison_lap_sets,
             graph_filters=graph_filters,
+            math_channels=math_channels,
         )
 
         with st.spinner("Generating plots..."):

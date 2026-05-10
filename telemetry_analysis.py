@@ -13,6 +13,7 @@ from html import escape
 
 from dashboard_config import CHANNEL_ALIASES, DASHBOARD_GRAPHS, DASHBOARD_TITLE
 from graph_renderers import GraphRendererFactory
+from math_channels import MathChannelEngine
 
 warnings.filterwarnings('ignore')
 
@@ -29,6 +30,7 @@ class FSAETelemetryAnalyzer:
         extra_graphs=None,
         comparison_lap_sets=None,
         graph_filters=None,
+        math_channels=None,
     ):
         """Initialize the analyzer with data directory"""
         self.data_dir = Path(data_dir)
@@ -39,6 +41,7 @@ class FSAETelemetryAnalyzer:
         self.extra_graphs = extra_graphs or []
         self.comparison_lap_sets = comparison_lap_sets or ['best', 'all']
         self.graph_filters = graph_filters or {}
+        self.math_channels = {channel['name']: channel for channel in math_channels or []}
         self.data = {}
         self.best_laps = {}
         self.generated_plots = []
@@ -173,6 +176,9 @@ class FSAETelemetryAnalyzer:
 
     def channel_series(self, df, channel_id, required=False):
         """Return a Series for a stable channel id, or None if unavailable."""
+        if channel_id in self.math_channels:
+            return self._math_channel_series(df, channel_id)
+
         column = self.resolve_channel(df, channel_id, required=required)
         if column:
             series = df[column]
@@ -183,6 +189,15 @@ class FSAETelemetryAnalyzer:
         if derived is not None:
             return derived
         return None
+
+    def _math_channel_series(self, df, channel_id):
+        """Evaluate a configured custom math channel."""
+        expression = self.math_channels[channel_id]['expression']
+        return MathChannelEngine.evaluate(
+            expression,
+            lambda input_channel: self.channel_series(df, input_channel),
+            index=df.index,
+        )
 
     def _is_shock_acceleration_channel(self, channel_id, column):
         """Identify shock acceleration channels that should be displayed in g."""
