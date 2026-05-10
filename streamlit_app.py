@@ -55,6 +55,7 @@ class TelemetryDashboardApp:
             self._display_channel_summary(summary_df)
         detected_channels = self._detect_channels(uploaded_runs)
         custom_graphs = self._custom_graph_builder(detected_channels)
+        graph_filters = self._graph_filter_builder(graph_ids, custom_graphs, detected_channels)
 
         if st.button("Generate Dashboard", type="primary"):
             if not uploaded_runs:
@@ -71,6 +72,7 @@ class TelemetryDashboardApp:
                 lap_threshold_percent / 100,
                 custom_graphs,
                 comparison_lap_sets,
+                graph_filters,
             )
 
     def _version_label(self):
@@ -427,11 +429,97 @@ class TelemetryDashboardApp:
             return True
         return False
 
+    def _graph_filter_builder(self, graph_ids, custom_graphs, detected_channels):
+        """Build per-graph channel range filters from UI selections."""
+        st.subheader("Graph Filters")
+        if not detected_channels:
+            st.caption("Select or upload CSV files to enable graph filters.")
+            return {}
+
+        graph_lookup = {graph["id"]: graph for graph in DASHBOARD_GRAPHS + custom_graphs}
+        selected_graphs = [graph_lookup[graph_id] for graph_id in graph_ids if graph_id in graph_lookup]
+        selected_graphs.extend(custom_graphs)
+        if not selected_graphs:
+            st.caption("Select at least one graph to configure filters.")
+            return {}
+
+        graph_filters = {}
+        for graph in selected_graphs:
+            label = f"{graph.get('category', 'General')} / {graph['name']}"
+            with st.expander(f"Filters - {label}", expanded=False):
+                enabled = st.checkbox("Enable filters for this graph", value=False, key=f"filter_enabled_{graph['id']}")
+                if not enabled:
+                    continue
+
+                filter_count = st.number_input(
+                    "Number of channel filters",
+                    min_value=1,
+                    max_value=8,
+                    value=1,
+                    step=1,
+                    key=f"filter_count_{graph['id']}",
+                )
+                channel_options = self._graph_filter_channel_options(graph, detected_channels)
+                filters = []
+                for idx in range(int(filter_count)):
+                    columns = st.columns([2, 1, 1])
+                    channel = columns[0].selectbox(
+                        "Channel",
+                        channel_options,
+                        key=f"filter_channel_{graph['id']}_{idx}",
+                    )
+                    min_value = columns[1].text_input("Min", value="", key=f"filter_min_{graph['id']}_{idx}")
+                    max_value = columns[2].text_input("Max", value="", key=f"filter_max_{graph['id']}_{idx}")
+                    parsed_filter = {
+                        "channel": channel,
+                        "min": self._parse_optional_float(min_value),
+                        "max": self._parse_optional_float(max_value),
+                    }
+                    if parsed_filter["min"] is not None or parsed_filter["max"] is not None:
+                        filters.append(parsed_filter)
+
+                if filters:
+                    graph_filters[graph["id"]] = filters
+                else:
+                    st.caption("Enter a min or max value to activate a filter.")
+        return graph_filters
+
+    def _graph_filter_channel_options(self, graph, detected_channels):
+        graph_channels = []
+        for key in ["x", "y", "speed_channel"]:
+            if graph.get(key):
+                graph_channels.append(graph[key])
+        for channel in graph.get("channels", []):
+            graph_channels.append(channel.get("id"))
+        for panel in graph.get("panels", []):
+            for key in ["x", "y", "channel"]:
+                if panel.get(key):
+                    graph_channels.append(panel[key])
+        for corner in graph.get("corners", []):
+            if corner.get("channel"):
+                graph_channels.append(corner["channel"])
+
+        options = []
+        for channel in graph_channels + detected_channels:
+            if channel and channel not in options:
+                options.append(channel)
+        return options
+
+    def _parse_optional_float(self, value):
+        value = str(value).strip()
+        if not value:
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            st.warning(f"Ignoring invalid filter value: {value}")
+            return None
+
     def _has_comparison_groups(self, runs):
         labels = {run.config_label for run in runs}
         return "No Aero" in labels and "Aero" in labels
 
-    def _generate_dashboard(self, runs, mode, graph_ids, lap_threshold, custom_graphs, comparison_lap_sets):
+    def _generate_dashboard(self, runs, mode, graph_ids, lap_threshold, custom_graphs, comparison_lap_sets, graph_filters):
         files = [run.saved_path for run in runs]
         config_labels = {run.stem: run.config_label for run in runs}
         analyzer = FSAETelemetryAnalyzer(
@@ -442,6 +530,7 @@ class TelemetryDashboardApp:
             lap_threshold=lap_threshold,
             extra_graphs=custom_graphs,
             comparison_lap_sets=comparison_lap_sets,
+            graph_filters=graph_filters,
         )
 
         with st.spinner("Generating plots..."):

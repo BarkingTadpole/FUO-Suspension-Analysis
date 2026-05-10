@@ -34,6 +34,26 @@ class GraphRenderer(ABC):
     def _combine_laps(self, laps):
         return self.analyzer._combine_laps(laps)
 
+    def _filtered_laps(self, laps):
+        return [self._filter_data(lap) for lap in laps]
+
+    def _filter_data(self, data):
+        """Apply configured numeric channel filters before plotting."""
+        filters = [item for item in self.graph.get("filters", []) if item.get("channel")]
+        if data is None or data.empty or not filters:
+            return data
+
+        mask = pd.Series(True, index=data.index)
+        for item in filters:
+            series = self.analyzer.channel_series(data, item["channel"])
+            if series is None:
+                continue
+            if item.get("min") is not None:
+                mask &= series >= item["min"]
+            if item.get("max") is not None:
+                mask &= series <= item["max"]
+        return data.loc[mask].copy()
+
 
 class TimeSeriesGraph(GraphRenderer):
     """One axis with one or more y channels plotted against an x channel."""
@@ -47,7 +67,7 @@ class TimeSeriesGraph(GraphRenderer):
             (aero_laps, aero_label, "#d62728"),
         ]:
             first_line = True
-            for lap in laps:
+            for lap in self._filtered_laps(laps):
                 x = self.analyzer.channel_series(lap, x_channel)
                 if x is None:
                     continue
@@ -71,6 +91,7 @@ class TimeSeriesGraph(GraphRenderer):
         return self._save(fig, self._filename(f"{filename_suffix}_comparison"))
 
     def render_individual(self, label, data, config_label):
+        data = self._filter_data(data)
         fig, ax = plt.subplots(figsize=tuple(self.graph.get("figsize", (12, 6))))
         x_channel = self.graph.get("x", "time")
         x = self.analyzer.channel_series(data, x_channel)
@@ -110,7 +131,7 @@ class TimeSeriesGridGraph(GraphRenderer):
                 (no_aero_laps, no_aero_label, panel.get("no_aero_color", "#1f77b4")),
                 (aero_laps, aero_label, panel.get("aero_color", "#d62728")),
             ]:
-                for idx, lap in enumerate(laps):
+                for idx, lap in enumerate(self._filtered_laps(laps)):
                     x = self.analyzer.channel_series(lap, x_channel)
                     y = self.analyzer.channel_series(lap, panel["channel"])
                     if x is None or y is None:
@@ -124,6 +145,7 @@ class TimeSeriesGridGraph(GraphRenderer):
         return self._save(fig, self._filename(f"{filename_suffix}_comparison"))
 
     def render_individual(self, label, data, config_label):
+        data = self._filter_data(data)
         panels = self.graph.get("panels", [])
         fig, axes = plt.subplots(len(panels), 1, figsize=tuple(self.graph.get("figsize", (14, 10))))
         axes = np.atleast_1d(axes)
@@ -150,8 +172,8 @@ class ScatterGraph(GraphRenderer):
     """Single x/y scatter plot."""
 
     def render_comparison(self, no_aero_laps, aero_laps, no_aero_label, aero_label, plot_context, filename_suffix):
-        no_aero_data = self._combine_laps(no_aero_laps)
-        aero_data = self._combine_laps(aero_laps)
+        no_aero_data = self._filter_data(self._combine_laps(no_aero_laps))
+        aero_data = self._filter_data(self._combine_laps(aero_laps))
         fig, ax = plt.subplots(figsize=tuple(self.graph.get("figsize", (10, 7))))
         plotted = False
         for data, label_text, color in [
@@ -180,6 +202,7 @@ class ScatterGraph(GraphRenderer):
         return self._save(fig, self._filename(f"{filename_suffix}_comparison"))
 
     def render_individual(self, label, data, config_label):
+        data = self._filter_data(data)
         x = self.analyzer.channel_series(data, self.graph["x"])
         y = self.analyzer.channel_series(data, self.graph["y"])
         if x is None or y is None:
@@ -206,8 +229,8 @@ class ScatterGridGraph(GraphRenderer):
         panels = self.graph.get("panels", [])
         fig, axes = plt.subplots(1, len(panels), figsize=tuple(self.graph.get("figsize", (14, 6))))
         axes = np.atleast_1d(axes)
-        no_aero_data = self._combine_laps(no_aero_laps)
-        aero_data = self._combine_laps(aero_laps)
+        no_aero_data = self._filter_data(self._combine_laps(no_aero_laps))
+        aero_data = self._filter_data(self._combine_laps(aero_laps))
         for ax, panel in zip(axes, panels):
             for data, label_text, color in [
                 (no_aero_data, no_aero_label, panel.get("no_aero_color", "#1f77b4")),
@@ -227,6 +250,7 @@ class ScatterGridGraph(GraphRenderer):
         return self._save(fig, self._filename(f"{filename_suffix}_comparison"))
 
     def render_individual(self, label, data, config_label):
+        data = self._filter_data(data)
         panels = self.graph.get("panels", [])
         fig, axes = plt.subplots(1, len(panels), figsize=tuple(self.graph.get("figsize", (14, 6))))
         axes = np.atleast_1d(axes)
@@ -250,9 +274,9 @@ class SpeedBinnedScatterGraph(GraphRenderer):
     """Scatter plot split into panels by GPS speed ranges."""
 
     def render_comparison(self, no_aero_laps, aero_laps, no_aero_label, aero_label, plot_context, filename_suffix):
-        no_aero_data = self._combine_laps(no_aero_laps)
-        aero_data = self._combine_laps(aero_laps)
-        speed_bins = self.graph.get("speed_bins", [])
+        no_aero_data = self._filter_data(self._combine_laps(no_aero_laps))
+        aero_data = self._filter_data(self._combine_laps(aero_laps))
+        speed_bins = self._speed_bins()
         fig, axes = self._create_axes(speed_bins)
         plotted = False
 
@@ -277,7 +301,8 @@ class SpeedBinnedScatterGraph(GraphRenderer):
         return self._save(fig, self._filename(f"{filename_suffix}_comparison"))
 
     def render_individual(self, label, data, config_label):
-        speed_bins = self.graph.get("speed_bins", [])
+        data = self._filter_data(data)
+        speed_bins = self._speed_bins()
         fig, axes = self._create_axes(speed_bins)
         plotted = False
 
@@ -299,8 +324,6 @@ class SpeedBinnedScatterGraph(GraphRenderer):
         return self._save(fig, self._filename(label))
 
     def _create_axes(self, speed_bins):
-        if not speed_bins:
-            speed_bins = [{"min": 0, "max": 999, "label": "All speeds"}]
         columns = min(2, len(speed_bins))
         rows = int(np.ceil(len(speed_bins) / columns))
         fig, axes = plt.subplots(rows, columns, figsize=tuple(self.graph.get("figsize", (14, 10))))
@@ -308,6 +331,9 @@ class SpeedBinnedScatterGraph(GraphRenderer):
         for ax in axes[len(speed_bins):]:
             ax.set_visible(False)
         return fig, axes[:len(speed_bins)]
+
+    def _speed_bins(self):
+        return self.graph.get("speed_bins") or [{"min": 0, "max": 999, "label": "All speeds"}]
 
     def _filtered_xy(self, data, speed_bin):
         x = self.analyzer.channel_series(data, self.graph["x"])
@@ -343,8 +369,8 @@ class HistogramPercentGraph(GraphRenderer):
         channels = self.graph.get("channels", [])
         fig, axes = plt.subplots(len(channels), 1, figsize=tuple(self.graph.get("figsize", (12, max(4, 3.5 * len(channels))))))
         axes = np.atleast_1d(axes)
-        no_aero_data = self._combine_laps(no_aero_laps)
-        aero_data = self._combine_laps(aero_laps)
+        no_aero_data = self._filter_data(self._combine_laps(no_aero_laps))
+        aero_data = self._filter_data(self._combine_laps(aero_laps))
         plotted = False
         for ax, channel in zip(axes, channels):
             no_aero_series = self.analyzer.channel_series(no_aero_data, channel["id"])
@@ -368,6 +394,7 @@ class HistogramPercentGraph(GraphRenderer):
         return self._save(fig, self._filename(f"{filename_suffix}_comparison"))
 
     def render_individual(self, label, data, config_label):
+        data = self._filter_data(data)
         channels = self.graph.get("channels", [])
         fig, axes = plt.subplots(len(channels), 1, figsize=tuple(self.graph.get("figsize", (12, max(4, 3.5 * len(channels))))))
         axes = np.atleast_1d(axes)
@@ -398,6 +425,7 @@ class ShockHistogramGraph(GraphRenderer):
     shock_colors = {"FL": "#e41a1c", "FR": "#00c800", "RL": "#0000ff", "RR": "#ff7f0e"}
 
     def render_individual(self, label, data, config_label):
+        data = self._filter_data(data)
         fig, axes = plt.subplots(2, 2, figsize=tuple(self.graph.get("figsize", (16, 12))))
         fig.subplots_adjust(top=0.86, hspace=0.55, wspace=0.20)
         for idx, shock in enumerate(self.graph["corners"]):
@@ -407,8 +435,8 @@ class ShockHistogramGraph(GraphRenderer):
         return self._save(fig, self._filename(label))
 
     def render_comparison(self, no_aero_laps, aero_laps, no_aero_label, aero_label, plot_context, filename_suffix):
-        no_aero_data = self._combine_laps(no_aero_laps)
-        aero_data = self._combine_laps(aero_laps)
+        no_aero_data = self._filter_data(self._combine_laps(no_aero_laps))
+        aero_data = self._filter_data(self._combine_laps(aero_laps))
         fig, axes = plt.subplots(2, 2, figsize=tuple(self.graph.get("figsize", (16, 12))))
         fig.subplots_adjust(top=0.86, hspace=0.55, wspace=0.20)
         for idx, shock in enumerate(self.graph["corners"]):
@@ -462,6 +490,8 @@ class TrackMapGraph(GraphRenderer):
     """GPS latitude/longitude track map."""
 
     def render_comparison(self, no_aero_laps, aero_laps, no_aero_label, aero_label, plot_context, filename_suffix):
+        no_aero_laps = self._filtered_laps(no_aero_laps)
+        aero_laps = self._filtered_laps(aero_laps)
         if not all(self.analyzer.has_channels(lap, ["gps_latitude", "gps_longitude"]) for lap in no_aero_laps + aero_laps):
             print("  Skipped track map: GPS latitude/longitude channels not found")
             return None
@@ -481,6 +511,7 @@ class TrackMapGraph(GraphRenderer):
         return self._save(fig, self._filename(f"{filename_suffix}_comparison"))
 
     def render_individual(self, label, data, config_label):
+        data = self._filter_data(data)
         if not self.analyzer.has_channels(data, ["gps_latitude", "gps_longitude"]):
             print(f"  Skipped track map for {label}: GPS latitude/longitude channels not found")
             return None
