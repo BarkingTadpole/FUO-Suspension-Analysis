@@ -3,6 +3,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -16,7 +17,6 @@ import io
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from dashboard_config import DASHBOARD_GRAPHS, DASHBOARD_TITLE
 from math_channels import MathChannelEngine
@@ -559,7 +559,7 @@ class TelemetryDashboardApp:
                 }
                 for run in runs
             ],
-            use_container_width=True,
+            width="stretch",
         )
 
     def _track_replay_dashboard(self, runs):
@@ -586,11 +586,11 @@ class TelemetryDashboardApp:
                 }
                 for record in lap_records
             ])
-            st.dataframe(summary_df, use_container_width=True, height=280)
+            st.dataframe(summary_df, width="stretch", height=280)
 
             best_by_run = summary_df.loc[summary_df.groupby("Run")["Lap Time (s)"].idxmin()].reset_index(drop=True)
             st.markdown("Best laps by run")
-            st.dataframe(best_by_run, use_container_width=True)
+            st.dataframe(best_by_run, width="stretch")
 
             label_to_record = {self._lap_record_label(record): record for record in lap_records}
             default_labels = [self._lap_record_label(record) for record in lap_records if record["is_best"]]
@@ -605,7 +605,8 @@ class TelemetryDashboardApp:
                 return
 
             replay_html = self._track_replay_html(selected_records)
-            components.html(replay_html, height=720, scrolling=True)
+            encoded_html = base64.b64encode(replay_html.encode("utf-8")).decode("ascii")
+            st.iframe(f"data:text/html;base64,{encoded_html}", height=720, width="stretch")
 
     def _build_lap_records(self, runs):
         analyzer = FSAETelemetryAnalyzer(self.workspace_root, files=[])
@@ -883,7 +884,7 @@ update(0);
         for column in ["Min", "Max", "Average"]:
             display_df[column] = display_df[column].round(4)
 
-        st.dataframe(display_df, use_container_width=True, height=360)
+        st.dataframe(display_df, width="stretch", height=360)
         st.download_button(
             "Download channel summary CSV",
             data=summary_df.to_csv(index=False),
@@ -1244,7 +1245,7 @@ update(0);
                 for column, plot in zip(columns, section_plots[row_start:row_start + 2]):
                     image_path = self.workspace_root / plot["filename"]
                     if image_path.exists():
-                        column.image(str(image_path), caption=plot["title"], use_container_width=True)
+                        column.image(str(image_path), caption=plot["title"], width="stretch")
 
 
 if __name__ == "__main__":
