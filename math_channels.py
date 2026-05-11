@@ -7,6 +7,33 @@ import numpy as np
 import pandas as pd
 
 
+def derivative(y, x=None):
+    """Return dy/dx for a Series or array."""
+    y_values = np.asarray(y, dtype=float)
+    if x is None:
+        x_values = np.arange(len(y_values), dtype=float)
+    else:
+        x_values = np.asarray(x, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        result = np.gradient(y_values, x_values)
+    return pd.Series(result, index=getattr(y, "index", None)).replace([np.inf, -np.inf], np.nan)
+
+
+def integral(y, x=None):
+    """Return cumulative trapezoidal integral of y over x."""
+    y_values = np.asarray(y, dtype=float)
+    if x is None:
+        x_values = np.arange(len(y_values), dtype=float)
+    else:
+        x_values = np.asarray(x, dtype=float)
+    result = np.zeros(len(y_values), dtype=float)
+    if len(y_values) > 1:
+        dx = np.diff(x_values)
+        avg_y = (y_values[1:] + y_values[:-1]) / 2.0
+        result[1:] = np.cumsum(avg_y * dx)
+    return pd.Series(result, index=getattr(y, "index", None))
+
+
 class MathChannelEngine:
     """Evaluate calculator-style math expressions over telemetry channels."""
 
@@ -25,6 +52,8 @@ class MathChannelEngine:
         "exp": np.exp,
         "radians": np.radians,
         "degrees": np.degrees,
+        "derivative": derivative,
+        "integral": integral,
     }
     CONSTANTS = {
         "pi": np.pi,
@@ -131,6 +160,7 @@ class MathChannelEngine:
         if isinstance(node, ast.Call):
             name = node.func.id
             arg_unit = cls._infer_node_unit(node.args[0], unit_env) if node.args else ""
+            second_arg_unit = cls._infer_node_unit(node.args[1], unit_env) if len(node.args) > 1 else ""
             if name in {"sin", "cos", "tan", "log", "log10", "exp"}:
                 return ""
             if name in {"asin", "acos", "atan"}:
@@ -141,6 +171,10 @@ class MathChannelEngine:
                 return "rad"
             if name == "sqrt":
                 return f"sqrt({arg_unit})" if arg_unit else ""
+            if name == "derivative":
+                return cls._divide_units(arg_unit, second_arg_unit or "sample")
+            if name == "integral":
+                return cls._multiply_units(arg_unit, second_arg_unit or "sample")
             return arg_unit
         return ""
 

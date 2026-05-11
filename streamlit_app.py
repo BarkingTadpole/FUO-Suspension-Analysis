@@ -16,6 +16,7 @@ import io
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from dashboard_config import DASHBOARD_GRAPHS, DASHBOARD_TITLE
 from math_channels import MathChannelEngine
@@ -56,6 +57,7 @@ class TelemetryDashboardApp:
         self.library_root = self.sample_dir / ".telemetry_uploads"
         self.library_files_root = self.library_root / "files"
         self.library_manifest_path = self.library_root / "manifest.json"
+        self.sample_manifest_path = self.library_root / "sample_manifest.json"
 
     def run(self):
         st.set_page_config(page_title=DASHBOARD_TITLE, layout="wide")
@@ -72,6 +74,7 @@ class TelemetryDashboardApp:
 
         uploaded_runs = self._collect_runs(use_samples)
         self._render_run_table(uploaded_runs)
+        self._track_replay_dashboard(uploaded_runs)
         if show_channel_summary and uploaded_runs:
             summary_df = self._build_channel_summary(uploaded_runs)
             self._display_channel_summary(summary_df)
@@ -180,29 +183,92 @@ class TelemetryDashboardApp:
                 st.success(f"Saved {saved_count} uploaded file(s) to the persistent data library.")
 
         if use_samples:
-            for filename, config_label in [("265.csv", "No Aero"), ("266.csv", "Aero"), ("273.csv", "Aero")]:
-                sample_path = self.sample_dir / filename
-                if sample_path.exists():
-                    target_path = workspace / filename
-                    shutil.copy2(sample_path, target_path)
-                    metadata = self._metadata_from_aim_csv_path(sample_path)
-                    runs.append(UploadedRun(
-                        filename,
-                        target_path,
-                        metadata.get("aero_config") or config_label,
-                        event_type=metadata.get("event_type", "Amigo Track 2"),
-                        custom_event=metadata.get("custom_event", ""),
-                        driver=metadata.get("driver", "Sample"),
-                        field=metadata.get("field", ""),
-                        suspension_setup=metadata.get("suspension_setup", ""),
-                        sprocket_size=metadata.get("sprocket_size", ""),
-                        notes=metadata.get("notes", ""),
-                        file_id=f"sample_{filename}",
-                    ))
+            runs.extend(self._sample_file_library(workspace))
 
         runs.extend(self._persistent_file_library(manifest))
 
         return runs
+
+    def _sample_file_library(self, workspace):
+        manifest = self._load_sample_manifest()
+        sample_files = [("265.csv", "No Aero"), ("266.csv", "Aero"), ("273.csv", "Aero")]
+        for filename, config_label in sample_files:
+            sample_path = self.sample_dir / filename
+            if not sample_path.exists():
+                continue
+            sample_id = f"sample_{filename}"
+            if sample_id not in manifest:
+                metadata = self._metadata_from_aim_csv_path(sample_path)
+                metadata["aero_config"] = metadata.get("aero_config") or config_label
+                manifest[sample_id] = {
+                    "id": sample_id,
+                    "original_name": filename,
+                    "stored_name": filename,
+                    "hidden": False,
+                    **metadata,
+                }
+
+        st.subheader("Sample File Library")
+        hidden_samples = [entry for entry in manifest.values() if entry.get("hidden")]
+        if hidden_samples and st.button("Restore Deleted Sample Files"):
+            for entry in manifest.values():
+                entry["hidden"] = False
+            self._save_sample_manifest(manifest)
+            st.rerun()
+
+        runs = []
+        visible_entries = [entry for entry in manifest.values() if not entry.get("hidden")]
+        label_to_entry = {self._library_entry_label(entry): entry for entry in visible_entries}
+        selected_labels = st.multiselect(
+            "Sample files to include",
+            options=list(label_to_entry.keys()),
+            default=list(label_to_entry.keys()),
+        )
+
+        for entry in visible_entries:
+            with st.expander(f"Sample Info - {entry.get('original_name')}", expanded=False):
+                self._sample_entry_editor(entry, manifest)
+
+            if self._library_entry_label(entry) not in selected_labels:
+                continue
+            source_path = self.sample_dir / entry["stored_name"]
+            target_path = workspace / entry["stored_name"]
+            shutil.copy2(source_path, target_path)
+            runs.append(UploadedRun(
+                entry["original_name"],
+                target_path,
+                entry.get("aero_config", "No Aero"),
+                event_type=entry.get("event_type", ""),
+                custom_event=entry.get("custom_event", ""),
+                driver=entry.get("driver", ""),
+                field=entry.get("field", ""),
+                suspension_setup=entry.get("suspension_setup", ""),
+                sprocket_size=entry.get("sprocket_size", ""),
+                notes=entry.get("notes", ""),
+                file_id=entry.get("id", ""),
+            ))
+        self._save_sample_manifest(manifest)
+        return runs
+
+    def _load_sample_manifest(self):
+        if not self.sample_manifest_path.exists():
+            return {}
+        try:
+            return json.loads(self.sample_manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+
+    def _save_sample_manifest(self, manifest):
+        self.library_root.mkdir(parents=True, exist_ok=True)
+        self.sample_manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    def _sample_entry_editor(self, entry, manifest):
+        self._metadata_entry_editor(entry, lambda: self._save_sample_manifest(manifest))
+        columns = st.columns([1, 4])
+        if columns[0].button("Delete Sample", key=f"delete_{entry['id']}"):
+            entry["hidden"] = True
+            self._save_sample_manifest(manifest)
+            st.rerun()
 
     def _load_file_manifest(self):
         if not self.library_manifest_path.exists():
@@ -398,6 +464,17 @@ class TelemetryDashboardApp:
         return self.library_files_root / entry.get("stored_name", "")
 
     def _library_entry_editor(self, entry, manifest):
+        self._metadata_entry_editor(entry, lambda: self._save_file_manifest(manifest))
+        columns = st.columns([1, 1, 4])
+        if columns[0].button("Auto Fill from CSV Header", key=f"autofill_{entry['id']}"):
+            entry.update(self._metadata_from_aim_csv_path(self._library_file_path(entry)))
+            self._save_file_manifest(manifest)
+            st.rerun()
+        if columns[1].button("Delete File", key=f"delete_file_{entry['id']}"):
+            self._delete_library_entry(entry, manifest)
+            st.rerun()
+
+    def _metadata_entry_editor(self, entry, save_callback):
         event_options = ["Autocross", "Accel", "Skidpad", "Amigo Track 1", "Amigo Track 2", "Custom"]
         file_id = entry["id"]
         current_event = entry.get("event_type", "Autocross")
@@ -426,15 +503,8 @@ class TelemetryDashboardApp:
 
         columns = st.columns([1, 1, 1, 3])
         if columns[0].button("Save Info", key=f"save_info_{file_id}"):
-            self._save_file_manifest(manifest)
+            save_callback()
             st.success("Saved file info.")
-        if columns[1].button("Auto Fill from CSV Header", key=f"autofill_{file_id}"):
-            entry.update(self._metadata_from_aim_csv_path(self._library_file_path(entry)))
-            self._save_file_manifest(manifest)
-            st.rerun()
-        if columns[2].button("Delete File", key=f"delete_file_{file_id}"):
-            self._delete_library_entry(entry, manifest)
-            st.rerun()
 
     def _delete_library_entry(self, entry, manifest):
         file_path = self._library_file_path(entry)
@@ -491,6 +561,200 @@ class TelemetryDashboardApp:
             ],
             use_container_width=True,
         )
+
+    def _track_replay_dashboard(self, runs):
+        st.subheader("Track Replay & Lap Review")
+        if not runs:
+            st.caption("Select files to view lap times, overlays, and moving track dots.")
+            return
+
+        with st.expander("Track maps, laps, times, overlays, and replay", expanded=False):
+            lap_records = self._build_lap_records(runs)
+            if not lap_records:
+                st.info("No valid lap segments with GPS latitude/longitude were found.")
+                return
+
+            summary_df = pd.DataFrame([
+                {
+                    "Run": record["run"].original_name,
+                    "Configuration": record["run"].config_label,
+                    "Event": record["run"].event_label,
+                    "Driver": record["run"].driver,
+                    "Lap #": record["lap_number"],
+                    "Lap Time (s)": round(record["duration"], 3),
+                    "Distance (m)": round(record.get("distance") or 0, 1),
+                }
+                for record in lap_records
+            ])
+            st.dataframe(summary_df, use_container_width=True, height=280)
+
+            best_by_run = summary_df.loc[summary_df.groupby("Run")["Lap Time (s)"].idxmin()].reset_index(drop=True)
+            st.markdown("Best laps by run")
+            st.dataframe(best_by_run, use_container_width=True)
+
+            label_to_record = {self._lap_record_label(record): record for record in lap_records}
+            default_labels = [self._lap_record_label(record) for record in lap_records if record["is_best"]]
+            selected_labels = st.multiselect(
+                "Laps to overlay/replay",
+                options=list(label_to_record.keys()),
+                default=default_labels[:6],
+            )
+            selected_records = [label_to_record[label] for label in selected_labels]
+            if not selected_records:
+                st.caption("Select one or more laps to draw the overlay and replay dots.")
+                return
+
+            replay_html = self._track_replay_html(selected_records)
+            components.html(replay_html, height=720, scrolling=True)
+
+    def _build_lap_records(self, runs):
+        analyzer = FSAETelemetryAnalyzer(self.workspace_root, files=[])
+        records = []
+        for run in runs:
+            try:
+                df = analyzer.load_csv(run.saved_path)
+            except Exception:
+                continue
+            if not analyzer.has_channels(df, ["gps_latitude", "gps_longitude"]):
+                continue
+            segments = analyzer.get_valid_lap_segments(df)
+            if not segments:
+                continue
+            best_duration = min(segment["duration"] for segment in segments)
+            for segment in segments:
+                lap_data = analyzer._extract_segment_data(df, segment)
+                gps_data = lap_data[[analyzer.resolve_channel(lap_data, "gps_latitude"), analyzer.resolve_channel(lap_data, "gps_longitude")]].dropna()
+                if len(gps_data) < 2:
+                    continue
+                records.append({
+                    "run": run,
+                    "lap_data": lap_data,
+                    "gps_data": gps_data,
+                    "lap_number": segment["index"] + 1,
+                    "duration": segment["duration"],
+                    "distance": segment.get("distance"),
+                    "is_best": segment["duration"] == best_duration,
+                })
+        return records
+
+    def _lap_record_label(self, record):
+        run = record["run"]
+        best = " BEST" if record["is_best"] else ""
+        return f"{run.original_name} lap {record['lap_number']} - {record['duration']:.3f}s - {run.config_label}{best}"
+
+    def _track_replay_html(self, records):
+        analyzer = FSAETelemetryAnalyzer(self.workspace_root, files=[])
+        origin_lat = pd.concat([analyzer.channel_series(record["gps_data"], "gps_latitude") for record in records], ignore_index=True).mean()
+        origin_lon = pd.concat([analyzer.channel_series(record["gps_data"], "gps_longitude") for record in records], ignore_index=True).mean()
+        colors = ["#2563eb", "#dc2626", "#16a34a", "#ea580c", "#7c3aed", "#0891b2", "#be123c", "#4b5563"]
+        laps = []
+        all_x = []
+        all_y = []
+
+        for idx, record in enumerate(records):
+            x, y = analyzer._latlon_to_local_xy(record["gps_data"], origin_lat, origin_lon)
+            points = [{"x": float(px), "y": float(py)} for px, py in zip(x, y)]
+            all_x.extend([point["x"] for point in points])
+            all_y.extend([point["y"] for point in points])
+            laps.append({
+                "label": self._lap_record_label(record),
+                "color": colors[idx % len(colors)],
+                "points": self._resample_points(points, 180),
+                "path": points,
+            })
+
+        if not all_x or not all_y:
+            return "<p>No GPS points available.</p>"
+
+        bounds = {
+            "minX": min(all_x),
+            "maxX": max(all_x),
+            "minY": min(all_y),
+            "maxY": max(all_y),
+        }
+        payload = json.dumps({"laps": laps, "bounds": bounds})
+        return f"""
+<div style="font-family:Arial,sans-serif;">
+  <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px;">
+    <button id="playPause" style="padding:6px 12px;">Play</button>
+    <input id="frameSlider" type="range" min="0" max="179" value="0" style="width:360px;">
+    <span id="frameText">Frame 0</span>
+  </div>
+  <svg id="trackSvg" viewBox="0 0 900 620" width="100%" height="620" style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;"></svg>
+  <div id="legend" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px;margin-top:10px;"></div>
+</div>
+<script>
+const data = {payload};
+const svg = document.getElementById("trackSvg");
+const slider = document.getElementById("frameSlider");
+const frameText = document.getElementById("frameText");
+const playPause = document.getElementById("playPause");
+const legend = document.getElementById("legend");
+const pad = 40, width = 900, height = 620;
+const sx = x => pad + ((x - data.bounds.minX) / Math.max(1, data.bounds.maxX - data.bounds.minX)) * (width - 2 * pad);
+const sy = y => height - pad - ((y - data.bounds.minY) / Math.max(1, data.bounds.maxY - data.bounds.minY)) * (height - 2 * pad);
+const dots = [];
+data.laps.forEach((lap, i) => {{
+  const pathData = lap.path.map((p, idx) => `${{idx === 0 ? "M" : "L"}} ${{sx(p.x)}} ${{sy(p.y)}}`).join(" ");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", pathData);
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", lap.color);
+  path.setAttribute("stroke-width", "2");
+  path.setAttribute("opacity", "0.65");
+  svg.appendChild(path);
+  const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  dot.setAttribute("r", "7");
+  dot.setAttribute("fill", lap.color);
+  dot.setAttribute("stroke", "white");
+  dot.setAttribute("stroke-width", "2");
+  svg.appendChild(dot);
+  dots.push(dot);
+  const item = document.createElement("div");
+  item.innerHTML = `<span style="display:inline-block;width:12px;height:12px;background:${{lap.color}};margin-right:6px;"></span>${{lap.label}}`;
+  legend.appendChild(item);
+}});
+function update(frame) {{
+  data.laps.forEach((lap, i) => {{
+    const p = lap.points[Math.min(frame, lap.points.length - 1)];
+    dots[i].setAttribute("cx", sx(p.x));
+    dots[i].setAttribute("cy", sy(p.y));
+  }});
+  frameText.textContent = `Frame ${{frame}}`;
+}}
+let playing = false;
+let timer = null;
+playPause.onclick = () => {{
+  playing = !playing;
+  playPause.textContent = playing ? "Pause" : "Play";
+  if (playing) {{
+    timer = setInterval(() => {{
+      slider.value = (Number(slider.value) + 1) % 180;
+      update(Number(slider.value));
+    }}, 50);
+  }} else {{
+    clearInterval(timer);
+  }}
+}};
+slider.oninput = () => update(Number(slider.value));
+update(0);
+</script>
+"""
+
+    def _resample_points(self, points, count):
+        if len(points) <= 1:
+            return points
+        target = [i * (len(points) - 1) / (count - 1) for i in range(count)]
+        resampled = []
+        for value in target:
+            lower = int(value)
+            upper = min(lower + 1, len(points) - 1)
+            frac = value - lower
+            resampled.append({
+                "x": points[lower]["x"] * (1 - frac) + points[upper]["x"] * frac,
+                "y": points[lower]["y"] * (1 - frac) + points[upper]["y"] * frac,
+            })
+        return resampled
 
     def _detect_channels(self, runs):
         """Autodetect available numeric channels from selected CSV files."""
@@ -743,6 +1007,7 @@ class TelemetryDashboardApp:
         button_rows = [
             ["+", "-", "*", "/", "**", "(", ")"],
             ["sin(", "cos(", "tan(", "asin(", "acos(", "atan("],
+            ["derivative(", "integral("],
             ["sqrt(", "abs(", "log(", "log10(", "exp(", "radians(", "degrees("],
             ["pi", "e", ".", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
         ]
