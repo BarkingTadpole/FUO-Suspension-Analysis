@@ -133,7 +133,8 @@ class MathChannelEngine:
                 raise ValueError(f"Unknown name '{node.id}'. Use channel buttons or supported calculator functions.")
             if isinstance(node, ast.Call):
                 if not isinstance(node.func, ast.Name) or node.func.id not in cls.FUNCTIONS:
-                    raise ValueError("Only supported calculator functions can be called.")
+                    supported = ", ".join(sorted(cls.FUNCTIONS))
+                    raise ValueError(f"Only supported calculator functions can be called: {supported}.")
         return tree
 
     @classmethod
