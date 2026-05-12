@@ -1091,6 +1091,7 @@ update(0);
                     y_units = st.text_input("Y units/label", value=self._channel_label(y_channel, channel_units), key=f"custom_speedbin_y_units_{idx}")
                     bin_count = st.number_input("Speed ranges", min_value=1, max_value=12, value=4, step=1, key=f"custom_speedbin_count_{idx}")
                     point_size = st.number_input("Point size", min_value=4, max_value=80, value=18, step=1, key=f"custom_speedbin_size_{idx}")
+                    share_axis_limits = st.checkbox("Use same axis scales across speed ranges", value=True, key=f"custom_speedbin_shared_axes_{idx}")
 
                     speed_bins = []
                     for bin_idx in range(int(bin_count)):
@@ -1122,6 +1123,7 @@ update(0);
                         "y_label": y_units,
                         "speed_bins": speed_bins,
                         "size": int(point_size),
+                        "share_axis_limits": bool(share_axis_limits),
                         "figsize": (14, max(5, 4.5 * rows)),
                     })
 

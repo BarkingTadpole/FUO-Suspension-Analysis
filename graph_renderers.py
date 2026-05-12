@@ -279,6 +279,7 @@ class SpeedBinnedScatterGraph(GraphRenderer):
         speed_bins = self._speed_bins()
         fig, axes = self._create_axes(speed_bins)
         plotted = False
+        point_sets = []
 
         for ax, speed_bin in zip(axes, speed_bins):
             for data, label_text, color in [
@@ -289,6 +290,7 @@ class SpeedBinnedScatterGraph(GraphRenderer):
                 if x is None or y is None or x.empty:
                     continue
                 ax.scatter(x, y, alpha=0.4, s=self.graph.get("size", 18), label=label_text, color=color)
+                point_sets.append((x, y))
                 plotted = True
             self._finish_panel(ax, speed_bin)
 
@@ -297,6 +299,7 @@ class SpeedBinnedScatterGraph(GraphRenderer):
             plt.close(fig)
             return None
 
+        self._apply_shared_axis_limits(axes, point_sets)
         fig.suptitle(f"{self.graph['name']} - {plot_context}", fontsize=14, fontweight="bold")
         return self._save(fig, self._filename(f"{filename_suffix}_comparison"))
 
@@ -305,6 +308,7 @@ class SpeedBinnedScatterGraph(GraphRenderer):
         speed_bins = self._speed_bins()
         fig, axes = self._create_axes(speed_bins)
         plotted = False
+        point_sets = []
 
         for ax, speed_bin in zip(axes, speed_bins):
             x, y = self._filtered_xy(data, speed_bin)
@@ -312,6 +316,7 @@ class SpeedBinnedScatterGraph(GraphRenderer):
                 ax.set_visible(False)
                 continue
             ax.scatter(x, y, alpha=0.55, s=self.graph.get("size", 18), label=config_label)
+            point_sets.append((x, y))
             self._finish_panel(ax, speed_bin)
             plotted = True
 
@@ -320,6 +325,7 @@ class SpeedBinnedScatterGraph(GraphRenderer):
             plt.close(fig)
             return None
 
+        self._apply_shared_axis_limits(axes, point_sets)
         fig.suptitle(f"{self.graph['name']} - {label}", fontsize=14, fontweight="bold")
         return self._save(fig, self._filename(label))
 
@@ -355,6 +361,35 @@ class SpeedBinnedScatterGraph(GraphRenderer):
         ax.set_ylabel(self.graph.get("y_label", self.graph["y"]))
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
+
+    def _apply_shared_axis_limits(self, axes, point_sets):
+        if self.graph.get("share_axis_limits", True) is False or not point_sets:
+            return
+
+        x_limits = self._padded_limits([points[0] for points in point_sets])
+        y_limits = self._padded_limits([points[1] for points in point_sets])
+        if x_limits is None or y_limits is None:
+            return
+
+        for ax in axes:
+            if not ax.get_visible():
+                continue
+            ax.set_xlim(*x_limits)
+            ax.set_ylim(*y_limits)
+
+    def _padded_limits(self, series_list):
+        values = pd.concat(series_list, ignore_index=True)
+        values = pd.to_numeric(values, errors="coerce").dropna()
+        if values.empty:
+            return None
+
+        lower = values.min()
+        upper = values.max()
+        if lower == upper:
+            padding = abs(lower) * 0.05 or 1.0
+        else:
+            padding = (upper - lower) * 0.05
+        return lower - padding, upper + padding
 
     def _speed_bin_label(self, speed_bin):
         min_speed = speed_bin.get("min", "-inf")
