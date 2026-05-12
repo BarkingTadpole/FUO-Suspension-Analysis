@@ -1035,6 +1035,7 @@ update(0);
         graph_type_options = {
             "Time Series": "timeseries",
             "Scatter Plot": "scatter",
+            "Speed-Binned Scatter": "speed_binned_scatter",
             "Percent Histogram": "histogram_percent",
             "Track Map": "track_map",
         }
@@ -1077,6 +1078,53 @@ update(0);
                         "y_label": y_units,
                     })
 
+                elif graph_kind == "speed_binned_scatter":
+                    x_channel = st.selectbox("X channel", detected_channels, key=f"custom_speedbin_x_{idx}")
+                    y_channel = st.selectbox("Y channel", detected_channels, key=f"custom_speedbin_y_{idx}")
+                    speed_channel = st.selectbox(
+                        "Speed channel",
+                        detected_channels,
+                        index=self._default_channel_index(detected_channels, "GPS Speed"),
+                        key=f"custom_speedbin_speed_{idx}",
+                    )
+                    x_units = st.text_input("X units/label", value=self._channel_label(x_channel, channel_units), key=f"custom_speedbin_x_units_{idx}")
+                    y_units = st.text_input("Y units/label", value=self._channel_label(y_channel, channel_units), key=f"custom_speedbin_y_units_{idx}")
+                    bin_count = st.number_input("Speed ranges", min_value=1, max_value=12, value=4, step=1, key=f"custom_speedbin_count_{idx}")
+                    point_size = st.number_input("Point size", min_value=4, max_value=80, value=18, step=1, key=f"custom_speedbin_size_{idx}")
+
+                    speed_bins = []
+                    for bin_idx in range(int(bin_count)):
+                        default_min, default_max = self._default_speed_bin(bin_idx)
+                        columns = st.columns([1, 1, 2])
+                        min_text = columns[0].text_input("Min km/h", value=f"{default_min:g}", key=f"custom_speedbin_min_{idx}_{bin_idx}")
+                        max_text = columns[1].text_input("Max km/h", value=f"{default_max:g}", key=f"custom_speedbin_max_{idx}_{bin_idx}")
+                        default_label = f"{default_min:g}-{default_max:g} km/h"
+                        label = columns[2].text_input("Range label", value=default_label, key=f"custom_speedbin_label_{idx}_{bin_idx}")
+                        min_value = self._parse_optional_float(min_text, "speed range minimum")
+                        max_value = self._parse_optional_float(max_text, "speed range maximum")
+                        if min_value is None or max_value is None:
+                            continue
+                        if max_value <= min_value:
+                            st.warning(f"Ignoring speed range {bin_idx + 1}: max must be greater than min.")
+                            continue
+                        speed_bins.append({
+                            "min": min_value,
+                            "max": max_value,
+                            "label": label.strip() or f"{min_value:g}-{max_value:g} km/h",
+                        })
+
+                    rows = max(1, (len(speed_bins) + 1) // 2)
+                    graph.update({
+                        "x": x_channel,
+                        "y": y_channel,
+                        "speed_channel": speed_channel,
+                        "x_label": x_units,
+                        "y_label": y_units,
+                        "speed_bins": speed_bins,
+                        "size": int(point_size),
+                        "figsize": (14, max(5, 4.5 * rows)),
+                    })
+
                 elif graph_kind == "histogram_percent":
                     channels = st.multiselect("Histogram channel(s)", detected_channels, key=f"custom_hist_channels_{idx}")
                     bins = st.number_input("Bins", min_value=4, max_value=80, value=12, step=1, key=f"custom_hist_bins_{idx}")
@@ -1104,12 +1152,21 @@ update(0);
         unit = channel_units.get(channel, "")
         return f"{channel} [{unit}]" if unit else channel
 
+    def _default_speed_bin(self, idx):
+        defaults = [(0, 25), (25, 45), (45, 65), (65, 90), (90, 110), (110, 130)]
+        if idx < len(defaults):
+            return defaults[idx]
+        start = 130 + (idx - len(defaults)) * 20
+        return start, start + 20
+
     def _custom_graph_is_valid(self, graph):
         kind = graph["kind"]
         if kind == "timeseries":
             return bool(graph.get("x") and graph.get("channels"))
         if kind == "scatter":
             return bool(graph.get("x") and graph.get("y"))
+        if kind == "speed_binned_scatter":
+            return bool(graph.get("x") and graph.get("y") and graph.get("speed_channel") and graph.get("speed_bins"))
         if kind == "histogram_percent":
             return bool(graph.get("channels"))
         if kind == "track_map":
@@ -1192,14 +1249,14 @@ update(0);
                 options.append(channel)
         return options
 
-    def _parse_optional_float(self, value):
+    def _parse_optional_float(self, value, label="filter value"):
         value = str(value).strip()
         if not value:
             return None
         try:
             return float(value)
         except ValueError:
-            st.warning(f"Ignoring invalid filter value: {value}")
+            st.warning(f"Ignoring invalid {label}: {value}")
             return None
 
     def _has_comparison_groups(self, runs):
